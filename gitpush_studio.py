@@ -2,7 +2,7 @@
 """
 GitPush Studio
 ==============
-Publica tu proyecto local en GitHub sin tocar la terminal.
+Publica, clona y empaqueta tus proyectos de GitHub sin tocar la terminal.
 
 Requisitos
 ----------
@@ -16,27 +16,31 @@ Uso
 ---
        python gitpush_studio.py
 
-Qué hace por ti (equivalente a la cadena de comandos manual):
-    git init  ->  git config  ->  revisión de seguridad  ->  .gitignore
-    ->  git add -A  ->  git commit  ->  git branch -M main
-    ->  git remote add/set-url  ->  git push [-f] -u origin main
+Novedades 1.4
+-------------
+* «⬇ Clonar repositorio…»: descarga cualquier repositorio de GitHub a
+  la carpeta que elijas, con progreso en vivo, y lo deja cargado como
+  proyecto actual.
+* «📄 Consolidar a TXT…»: empaqueta todo el proyecto (estructura en
+  árbol + contenido de cada archivo) en un único .txt. Por defecto se
+  llama como el proyecto y se guarda junto a él, pero puedes elegir
+  nombre y ubicación. Respeta el .gitignore y el cuadro de ignorar,
+  omite binarios y archivos enormes, y nunca se incluye a sí mismo.
+
+Novedades 1.3
+-------------
+* «🌍 Publicar como web…» (GitHub Pages con enlace real) y
+  auto-publicación vigilando la carpeta.
 
 Novedades 1.2
 -------------
-* Revisión de seguridad antes de cada publicación: detecta archivos
-  de más de 100 MB (GitHub los rechaza), avisa entre 50 y 100 MB, y
-  busca posibles secretos (.env, llaves privadas, tokens y claves API
-  dentro de archivos de texto). Si encuentra algo, se detiene y te
-  deja excluirlos con un clic.
-* Botón «🛡 Analizar» para pasar la misma revisión cuando quieras,
-  sin publicar nada.
+* Revisión de seguridad (archivos de más de 100 MB y posibles
+  secretos) automática antes de publicar + botón «🛡 Analizar».
 
 Novedades 1.1
 -------------
-* Crear el repositorio en GitHub desde la propia app («➕ Crear
-  repositorio nuevo…»), usando un token personal con permiso «repo».
-* El token puede recordarse: en Windows se guarda cifrado con tu
-  cuenta de usuario (DPAPI).
+* «➕ Crear repositorio nuevo…» con token personal (permiso «repo»).
+  El token se guarda cifrado con tu cuenta de Windows (DPAPI).
 
 Los perfiles se guardan en:  ~/.gitpush_studio/profiles.json
 """
@@ -49,6 +53,7 @@ import time
 import queue
 import base64
 import fnmatch
+import hashlib
 import threading
 import subprocess
 import webbrowser
@@ -80,7 +85,7 @@ except ImportError:
 #  Constantes y tema (inspirado en el modo oscuro de GitHub)          #
 # ------------------------------------------------------------------ #
 APP_NAME = "GitPush Studio"
-APP_VERSION = "1.2"
+APP_VERSION = "1.4"
 
 CONFIG_DIR = Path.home() / ".gitpush_studio"
 CONFIG_FILE = CONFIG_DIR / "profiles.json"
@@ -117,6 +122,10 @@ LIMIT_WARN   = 50 * MB      # GitHub avisa a partir de aquí
 MAX_CONTENT  = 1 * MB       # solo se lee el contenido de textos pequeños
 CONTENT_BUDGET = 80 * MB    # tope total de lectura para no tardar
 MAX_FINDINGS = 300
+
+# --- Límites del consolidador a TXT -------------------------------- #
+PACK_MAX_FILE  = 2 * MB     # contenido máximo por archivo
+PACK_MAX_TOTAL = 100 * MB   # tamaño máximo del TXT resultante
 
 BIN_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif",
@@ -170,11 +179,40 @@ def fmt_size(n):
     return f"{n} B"
 
 
+def parse_owner_repo(url):
+    """Extrae (usuario, repositorio) de una URL de GitHub."""
+    m = re.search(r"github\.com[:/]+([^/\s]+)/([^/\s]+?)(?:\.git)?/?$",
+                  (url or "").strip())
+    if m:
+        return m.group(1), m.group(2)
+    return None, None
+
+
+def repo_name_from_url(url):
+    owner, repo = parse_owner_repo(url)
+    if repo:
+        return repo
+    tail = Path((url or "").rstrip("/")).name
+    return tail[:-4] if tail.endswith(".git") else tail
+
+
+def open_in_explorer(path):
+    """Abre un archivo o carpeta con el programa predeterminado."""
+    try:
+        if os.name == "nt":
+            os.startfile(path)                     # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.run(["open", str(path)], check=False)
+        else:
+            subprocess.run(["xdg-open", str(path)], check=False)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ #
-#  Revisión de seguridad: archivos grandes y posibles secretos        #
+#  Coincidencia estilo .gitignore (simplificada) y patrones           #
 # ------------------------------------------------------------------ #
 def _pattern_matches(pat, rel, name):
-    """Coincidencia simplificada al estilo .gitignore."""
     p = pat.strip().rstrip("/")
     if not p or p.startswith("#") or p.startswith("!"):
         return False
@@ -200,17 +238,9 @@ def _looks_secret_name(name):
     return any(fnmatch.fnmatch(low, pat) for pat in SECRET_NAME_PATTERNS)
 
 
-def scan_project(folder, extra_patterns):
-    """Devuelve (hallazgos, estadísticas).
-
-    Cada hallazgo: {"path", "size", "kind": huge|big|secret, "reason"}.
-    Respeta (de forma simplificada) los patrones del cuadro de ignorar
-    y del .gitignore existente, y omite siempre la carpeta .git.
-    """
-    t0 = time.time()
-    folder = Path(folder)
+def _merged_patterns(folder, extra_patterns):
     patterns = [p.strip() for p in extra_patterns if p.strip()]
-    gi = folder / ".gitignore"
+    gi = Path(folder) / ".gitignore"
     if gi.exists():
         try:
             for ln in gi.read_text(encoding="utf-8",
@@ -220,6 +250,20 @@ def scan_project(folder, extra_patterns):
                     patterns.append(ln)
         except Exception:
             pass
+    return patterns
+
+
+# ------------------------------------------------------------------ #
+#  Revisión de seguridad: archivos grandes y posibles secretos        #
+# ------------------------------------------------------------------ #
+def scan_project(folder, extra_patterns):
+    """Devuelve (hallazgos, estadísticas).
+
+    Cada hallazgo: {"path", "size", "kind": huge|big|secret, "reason"}.
+    """
+    t0 = time.time()
+    folder = Path(folder)
+    patterns = _merged_patterns(folder, extra_patterns)
 
     findings, truncated = [], False
     files_seen = content_read = 0
@@ -288,6 +332,186 @@ def scan_project(folder, extra_patterns):
     stats = {"files": files_seen, "content": content_read,
              "seconds": time.time() - t0, "truncated": truncated}
     return findings, stats
+
+
+def folder_fingerprint(folder, extra_patterns):
+    """Huella rápida del contenido (rutas + tamaños + fechas)."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return None
+    patterns = _merged_patterns(folder, extra_patterns)
+    h = hashlib.md5()
+    for root, dirs, files in os.walk(folder):
+        relroot = Path(root).relative_to(folder).as_posix()
+        if relroot == ".":
+            relroot = ""
+        dirs[:] = sorted(d for d in dirs
+                         if d != ".git"
+                         and not _is_ignored((relroot + "/" + d).lstrip("/"),
+                                             d, patterns))
+        for name in sorted(files):
+            rel = (relroot + "/" + name).lstrip("/")
+            if _is_ignored(rel, name, patterns):
+                continue
+            try:
+                st = os.stat(os.path.join(root, name))
+            except OSError:
+                continue
+            h.update(f"{rel}|{st.st_size}|{st.st_mtime_ns}\n".encode())
+    return h.hexdigest()
+
+
+# ------------------------------------------------------------------ #
+#  Consolidar el proyecto en un único TXT                             #
+# ------------------------------------------------------------------ #
+def render_tree(root_name, rel_paths):
+    """Dibuja el árbol del proyecto a partir de las rutas incluidas."""
+    tree = {}
+    for rel in rel_paths:
+        node = tree
+        parts = rel.split("/")
+        for p in parts[:-1]:
+            node = node.setdefault(p, {})
+        node[parts[-1]] = None
+    lines = [root_name + "/"]
+
+    def walk(node, prefix):
+        dirs = sorted((k for k, v in node.items() if isinstance(v, dict)),
+                      key=str.lower)
+        files = sorted((k for k, v in node.items() if v is None),
+                       key=str.lower)
+        entries = dirs + files
+        for i, name in enumerate(entries):
+            last = i == len(entries) - 1
+            branch = "└── " if last else "├── "
+            suffix = "/" if isinstance(node[name], dict) else ""
+            lines.append(prefix + branch + name + suffix)
+            if isinstance(node[name], dict):
+                walk(node[name], prefix + ("    " if last else "│   "))
+
+    walk(tree, "")
+    return "\n".join(lines)
+
+
+def consolidate_project(project_dir, output_file, extra_patterns,
+                        respect_ignores=True,
+                        max_file_bytes=PACK_MAX_FILE,
+                        max_total_bytes=PACK_MAX_TOTAL):
+    """Empaqueta el proyecto en un solo TXT (árbol + contenido).
+
+    Respeta el .gitignore y los patrones dados, omite .git, marca los
+    binarios y los archivos enormes, y nunca se incluye a sí mismo.
+    Devuelve estadísticas del proceso.
+    """
+    t0 = time.time()
+    project_dir = Path(project_dir).resolve()
+    output_file = Path(output_file).resolve()
+    if not project_dir.is_dir():
+        raise FileNotFoundError(f"Directorio no válido: {project_dir}")
+
+    if respect_ignores:
+        patterns = _merged_patterns(project_dir, extra_patterns)
+    else:
+        patterns = [p.strip() for p in extra_patterns if p.strip()]
+
+    included, skipped_ignored = [], 0
+    for root, dirs, files in os.walk(project_dir):
+        relroot = Path(root).relative_to(project_dir).as_posix()
+        if relroot == ".":
+            relroot = ""
+        dirs[:] = [d for d in dirs
+                   if d != ".git"
+                   and not _is_ignored((relroot + "/" + d).lstrip("/"),
+                                       d, patterns)]
+        for name in files:
+            rel = (relroot + "/" + name).lstrip("/")
+            fp = Path(root) / name
+            try:
+                if fp.resolve() == output_file:
+                    continue                      # jamás incluirse a sí mismo
+                size = fp.stat().st_size
+            except OSError:
+                continue
+            if _is_ignored(rel, name, patterns):
+                skipped_ignored += 1
+                continue
+            included.append((rel, fp, size))
+
+    included.sort(key=lambda x: x[0].lower())
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+
+    n_bin = n_big = 0
+    truncated = False
+    with output_file.open("w", encoding="utf-8", newline="\n") as out:
+        out.write(f"MODULO RAIZ: {project_dir.name}\n")
+        out.write(f"GENERADO: {datetime.now():%Y-%m-%d %H:%M}   ·   "
+                  f"ARCHIVOS INCLUIDOS: {len(included)}\n\n")
+        out.write("ESTRUCTURA DEL PROYECTO\n")
+        out.write("-" * 30 + "\n")
+        out.write(render_tree(project_dir.name, [r for r, _, _ in included]))
+        out.write("\n\n" + "=" * 80 + "\n\n")
+
+        for rel, fp, size in included:
+            out.write(f"MODULO: {rel}\n")
+            out.write("-" * 80 + "\n")
+            if size > max_file_bytes:
+                out.write(f"<ARCHIVO OMITIDO POR TAMAÑO "
+                          f"({fmt_size(size)})>\n")
+                n_big += 1
+            else:
+                raw = None
+                try:
+                    raw = fp.read_bytes()
+                except Exception as e:
+                    out.write(f"<ERROR AL LEER ARCHIVO: {e}>\n")
+                if raw is not None:
+                    if raw and b"\x00" in raw[:4096]:
+                        out.write(f"<ARCHIVO BINARIO OMITIDO "
+                                  f"({fmt_size(size)})>\n")
+                        n_bin += 1
+                    else:
+                        out.write(raw.decode("utf-8", "replace").rstrip()
+                                  + "\n")
+            out.write("\n" + "=" * 80 + "\n\n")
+            if out.tell() > max_total_bytes:
+                out.write("<SALIDA TRUNCADA: se alcanzó el límite de "
+                          f"{fmt_size(max_total_bytes)}>\n")
+                truncated = True
+                break
+
+    return {"files": len(included), "binaries": n_bin, "big": n_big,
+            "ignored": skipped_ignored,
+            "bytes": output_file.stat().st_size,
+            "seconds": time.time() - t0, "truncated": truncated}
+
+
+# ------------------------------------------------------------------ #
+#  Git con salida en vivo (para clonar)                               #
+# ------------------------------------------------------------------ #
+def run_git_stream(args, cwd, on_line, timeout=1800):
+    """Ejecuta git mostrando cada línea de salida. Devuelve el código."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        p = subprocess.Popen(
+            ["git", *args], cwd=cwd, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, encoding="utf-8",
+            errors="replace", creationflags=NO_WINDOW, env=env)
+    except FileNotFoundError:
+        on_line("Git no está instalado o no está en el PATH.")
+        return 127
+    start = time.time()
+    assert p.stdout is not None
+    for raw in p.stdout:
+        for piece in raw.replace("\r", "\n").splitlines():
+            piece = piece.strip()
+            if piece:
+                on_line(piece)
+        if time.time() - start > timeout:
+            p.kill()
+            on_line("Tiempo agotado.")
+            return 1
+    return p.wait()
 
 
 # ------------------------------------------------------------------ #
@@ -383,8 +607,8 @@ class GitPushStudio(ctk.CTk):
         ctk.set_appearance_mode("dark")
 
         self.title(f"{APP_NAME} — Publica en GitHub sin terminal")
-        self.geometry("1080x780")
-        self.minsize(940, 680)
+        self.geometry("1080x800")
+        self.minsize(940, 700)
         self.configure(fg_color=BG)
 
         # Fuentes
@@ -402,12 +626,19 @@ class GitPushStudio(ctk.CTk):
         self.working = False
         self.scanning = False
         self.last_repo_web = ""
+        self.last_pages_url = ""
         self.config_data = self._load_config()
         self.selected_profile = None
         self._profile_buttons = {}
         self._repo_dlg = None
+        self._pages_dlg = None
+        self._clone_dlg = None
+        self._pack_dlg = None
         self._review_event = threading.Event()
         self._review_result = ("cancel", [])
+        self._auto_job = None
+        self._last_pub_fp = None
+        self._auto_fp = None
 
         # Estructura general: sidebar + panel principal
         self.grid_columnconfigure(1, weight=1)
@@ -426,13 +657,12 @@ class GitPushStudio(ctk.CTk):
         self.after(80, self._poll_queue)
 
         self._log("Bienvenido a GitPush Studio.", "ok")
-        self._log("Completa los campos y pulsa «Publicar en GitHub». La "
-                  "revisión de seguridad se hace sola antes de cada "
-                  "publicación; también puedes lanzarla con «🛡 Analizar».",
-                  "dim")
+        self._log("Publica con «🚀», clona con «⬇», empaqueta a TXT con "
+                  "«📄», activa tu web con «🌍», o deja la "
+                  "auto-publicación vigilando por ti.", "dim")
 
     # ------------------------------------------------------------- #
-    #  Sidebar (perfiles)                                            #
+    #  Sidebar (perfiles y herramientas)                             #
     # ------------------------------------------------------------- #
     def _build_sidebar(self):
         sb = ctk.CTkFrame(self, width=250, corner_radius=0, fg_color=PANEL,
@@ -478,11 +708,33 @@ class GitPushStudio(ctk.CTk):
                       text_color=MUTED, command=self._delete_profile
                       ).grid(row=1, column=0, sticky="ew")
 
+        ctk.CTkFrame(sb, height=1, fg_color=BORDER).grid(
+            row=6, column=0, sticky="ew", padx=14, pady=(10, 0))
+        ctk.CTkLabel(sb, text="HERRAMIENTAS", font=self.f_small,
+                     text_color=MUTED).grid(row=7, column=0, sticky="w",
+                                            padx=18, pady=(10, 4))
+        tools = ctk.CTkFrame(sb, fg_color="transparent")
+        tools.grid(row=8, column=0, sticky="ew", padx=14)
+        tools.grid_columnconfigure(0, weight=1)
+        ctk.CTkButton(tools, text="⬇  Clonar repositorio…", height=34,
+                      anchor="w", font=self.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER,
+                      text_color=TEXT, command=self._open_clone
+                      ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ctk.CTkButton(tools, text="📄  Consolidar a TXT…", height=34,
+                      anchor="w", font=self.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER,
+                      text_color=TEXT, command=self._open_consolidate
+                      ).grid(row=1, column=0, sticky="ew")
+
         ctk.CTkLabel(sb, text="Los perfiles se guardan en\n~/.gitpush_studio",
                      font=self.f_small, text_color=MUTED, justify="left"
-                     ).grid(row=6, column=0, sticky="w", padx=18, pady=(10, 2))
+                     ).grid(row=9, column=0, sticky="w", padx=18,
+                            pady=(12, 2))
         ctk.CTkLabel(sb, text=f"v{APP_VERSION}", font=self.f_small,
-                     text_color=BORDER).grid(row=7, column=0, sticky="w",
+                     text_color=BORDER).grid(row=10, column=0, sticky="w",
                                              padx=18, pady=(0, 12))
         self._refresh_profile_list()
 
@@ -502,10 +754,14 @@ class GitPushStudio(ctk.CTk):
 
         ctk.CTkLabel(head, text="Publicar proyecto", font=self.f_title,
                      text_color=TEXT).grid(row=0, column=0, sticky="w")
+        self.auto_pill = ctk.CTkLabel(
+            head, text="🤖 auto", font=self.f_small, text_color=MUTED,
+            fg_color="transparent", corner_radius=12, width=70, height=26)
+        self.auto_pill.grid(row=0, column=1, sticky="e", padx=(0, 8))
         self.status_pill = ctk.CTkLabel(
             head, text="●  Listo", font=self.f_small, text_color=MUTED,
             fg_color=PANEL, corner_radius=12, width=150, height=26)
-        self.status_pill.grid(row=0, column=1, sticky="e")
+        self.status_pill.grid(row=0, column=2, sticky="e")
 
         # --- Formulario (desplazable) --------------------------------
         form = ctk.CTkScrollableFrame(
@@ -570,7 +826,7 @@ class GitPushStudio(ctk.CTk):
                       command=self._clear_log).grid(row=0, column=1)
 
         self.log_box = ctk.CTkTextbox(
-            logf, height=190, font=self.f_mono, corner_radius=8,
+            logf, height=180, font=self.f_mono, corner_radius=8,
             fg_color="#010409", text_color="#c9d1d9",
             border_width=0, wrap="word",
             scrollbar_button_color=BORDER, scrollbar_button_hover_color=MUTED)
@@ -601,7 +857,8 @@ class GitPushStudio(ctk.CTk):
 
     def _hint(self, parent, text):
         ctk.CTkLabel(parent, text=text, font=self.f_small, text_color=MUTED,
-                     justify="left").pack(anchor="w", padx=16, pady=(2, 12))
+                     justify="left", wraplength=640
+                     ).pack(anchor="w", padx=16, pady=(2, 12))
 
     def _build_form(self, form):
         # 1) Carpeta del proyecto -------------------------------------
@@ -618,7 +875,9 @@ class GitPushStudio(ctk.CTk):
                       border_width=1, border_color=BORDER, text_color=TEXT,
                       command=self._browse_folder).grid(row=0, column=1)
         self._hint(c, "La carpeta local que quieres subir. "
-                      "También puedes pegar rutas estilo Git Bash (/c/Users/…).")
+                      "También puedes pegar rutas estilo Git Bash (/c/Users/…). "
+                      "¿Aún no la tienes? Usa «⬇ Clonar repositorio…» en la "
+                      "barra lateral.")
 
         # 2) Identidad Git --------------------------------------------
         c = self._card(form, "👤  Identidad Git")
@@ -655,13 +914,20 @@ class GitPushStudio(ctk.CTk):
         row2 = ctk.CTkFrame(c, fg_color="transparent")
         row2.pack(fill="x", padx=16, pady=(8, 0))
         ctk.CTkButton(row2, text="➕  Crear repositorio nuevo…",
-                      height=32, width=230, font=self.f_body,
+                      height=32, width=220, font=self.f_body,
                       corner_radius=8, fg_color=PANEL2, hover_color=BORDER,
                       border_width=1, border_color=BORDER, text_color=TEXT,
                       command=self._open_create_repo).pack(side="left")
-        self._hint(c, "¿El repositorio aún no existe? Créalo aquí mismo con "
-                      "un token de GitHub y la URL se rellenará sola. "
-                      "A la derecha, la rama (normalmente «main»).")
+        ctk.CTkButton(row2, text="🌍  Publicar como web…",
+                      height=32, width=200, font=self.f_body,
+                      corner_radius=8, fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._open_pages).pack(side="left", padx=(8, 0))
+        self._hint(c, "«➕» crea el repositorio con tu token y rellena la "
+                      "URL sola. «🌍» activa GitHub Pages para que tu "
+                      "proyecto sea una página web con enlace propio "
+                      "(requiere repositorio público y haber publicado "
+                      "antes). A la derecha, la rama (normalmente «main»).")
 
         # 4) Archivos a ignorar ---------------------------------------
         c = self._card(form, "🙈  Archivos y carpetas a ignorar (.gitignore)")
@@ -674,7 +940,8 @@ class GitPushStudio(ctk.CTk):
         self.t_ignore.insert("1.0", "node_modules/\n")
         self._hint(c, "Un patrón por línea. Se añadirán al .gitignore sin "
                       "borrar lo que ya tenga. La revisión de seguridad "
-                      "también puede añadir líneas aquí.")
+                      "también puede añadir líneas aquí, y el consolidador "
+                      "a TXT respeta esta misma lista.")
 
         # 5) Commit -----------------------------------------------------
         c = self._card(form, "📝  Mensaje del commit")
@@ -689,7 +956,35 @@ class GitPushStudio(ctk.CTk):
                         checkbox_height=18).pack(anchor="w", padx=16,
                                                  pady=(8, 12))
 
-        # 6) Opciones ----------------------------------------------------
+        # 6) Auto-publicación -------------------------------------------
+        c = self._card(form, "🤖  Auto-publicación")
+        rowa = ctk.CTkFrame(c, fg_color="transparent")
+        rowa.pack(fill="x", padx=16, pady=(6, 0))
+        self.v_auto = ctk.BooleanVar(value=False)
+        ctk.CTkSwitch(rowa, text="Vigilar la carpeta y publicar sola",
+                      variable=self.v_auto, font=self.f_body,
+                      text_color=TEXT, progress_color=GREEN,
+                      button_color=TEXT, button_hover_color="#ffffff",
+                      fg_color=PANEL2, command=self._toggle_auto
+                      ).pack(side="left")
+        ctk.CTkLabel(rowa, text="   Comprobar cada", font=self.f_small,
+                     text_color=MUTED).pack(side="left")
+        self.om_interval = ctk.CTkOptionMenu(
+            rowa, values=["2 min", "5 min", "10 min", "30 min"],
+            width=95, height=28, font=self.f_small,
+            fg_color=PANEL2, button_color=BORDER,
+            button_hover_color=MUTED, text_color=TEXT,
+            dropdown_fg_color=PANEL, dropdown_text_color=TEXT,
+            dropdown_hover_color=PANEL2, command=self._interval_changed)
+        self.om_interval.set("10 min")
+        self.om_interval.pack(side="left", padx=(8, 0))
+        self._hint(c, "Si hubo cambios y ya dejaste de guardar, publica "
+                      "sola (con la revisión de seguridad incluida: si "
+                      "encuentra algo, se pausa y te avisa en vez de subir). "
+                      "Por seguridad empieza apagada cada vez que abres "
+                      "la app.")
+
+        # 7) Opciones ----------------------------------------------------
         c = self._card(form, "⚙️  Opciones")
         self.v_force = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(c, text="Push forzado (-f): sobrescribe el historial "
@@ -752,6 +1047,7 @@ class GitPushStudio(ctk.CTk):
             "stamp": bool(self.v_stamp.get()),
             "force": bool(self.v_force.get()),
             "check": bool(self.v_check.get()),
+            "auto_interval": self._interval_minutes(),
         }
 
     def _apply_state(self, s):
@@ -773,6 +1069,7 @@ class GitPushStudio(ctk.CTk):
         self.v_stamp.set(s.get("stamp", False))
         self.v_force.set(s.get("force", False))
         self.v_check.set(s.get("check", True))
+        self.om_interval.set(f"{int(s.get('auto_interval', 10))} min")
 
     def _load_config(self):
         try:
@@ -820,6 +1117,9 @@ class GitPushStudio(ctk.CTk):
         self.selected_profile = name
         self.config_data["last_profile"] = name
         if load:
+            if self.v_auto.get():
+                self.v_auto.set(False)
+                self._toggle_auto()
             self._apply_state(self.config_data["profiles"].get(name, {}))
             self._log(f"Perfil «{name}» cargado.", "dim")
         self._refresh_profile_list()
@@ -868,12 +1168,35 @@ class GitPushStudio(ctk.CTk):
             self.config_data.pop("github_token", None)
         self._save_config()
 
-    def _open_create_repo(self):
-        if self._repo_dlg is not None and self._repo_dlg.winfo_exists():
-            self._repo_dlg.lift()
-            self._repo_dlg.focus()
+    # ------------------------------------------------------------- #
+    #  Apertura de diálogos                                          #
+    # ------------------------------------------------------------- #
+    def _singleton_dialog(self, attr, factory):
+        dlg = getattr(self, attr)
+        if dlg is not None and dlg.winfo_exists():
+            dlg.lift()
+            dlg.focus()
             return
-        self._repo_dlg = CreateRepoDialog(self)
+        setattr(self, attr, factory())
+
+    def _open_create_repo(self):
+        self._singleton_dialog("_repo_dlg", lambda: CreateRepoDialog(self))
+
+    def _open_pages(self):
+        owner, repo = parse_owner_repo(self.e_url.get())
+        if not owner:
+            messagebox.showwarning(APP_NAME, "Escribe primero la URL del "
+                                             "repositorio de GitHub.")
+            return
+        self._singleton_dialog("_pages_dlg",
+                               lambda: PagesDialog(self, owner, repo))
+
+    def _open_clone(self):
+        self._singleton_dialog("_clone_dlg", lambda: CloneDialog(self))
+
+    def _open_consolidate(self):
+        self._singleton_dialog("_pack_dlg",
+                               lambda: ConsolidateDialog(self))
 
     # ------------------------------------------------------------- #
     #  Utilidades                                                    #
@@ -931,6 +1254,127 @@ class GitPushStudio(ctk.CTk):
         self.t_ignore.delete("1.0", "end")
         self.t_ignore.insert("1.0", "\n".join(current + new) + "\n")
         self._log("Añadido al cuadro de ignorar: " + ", ".join(new), "dim")
+
+    def set_current_project(self, folder, url):
+        """Carga carpeta y URL en el formulario (p. ej. tras clonar)."""
+        if self.v_auto.get():
+            self.v_auto.set(False)
+            self._toggle_auto()
+        self.e_folder.delete(0, "end")
+        self.e_folder.insert(0, str(folder))
+        if url:
+            self.e_url.delete(0, "end")
+            self.e_url.insert(0, url)
+        self._log("Proyecto cargado en el formulario.", "dim")
+
+    # ------------------------------------------------------------- #
+    #  Auto-publicación                                              #
+    # ------------------------------------------------------------- #
+    def _interval_minutes(self):
+        try:
+            return int(self.om_interval.get().split()[0])
+        except Exception:
+            return 10
+
+    def _interval_changed(self, _value=None):
+        if self.v_auto.get():
+            self._schedule_auto()
+            self._log(f"🤖 Intervalo cambiado: cada "
+                      f"{self._interval_minutes()} min.", "dim")
+
+    def _toggle_auto(self):
+        if self.v_auto.get():
+            folder = self._normalize_path(self.e_folder.get())
+            if not folder or not Path(folder).is_dir():
+                self.v_auto.set(False)
+                messagebox.showwarning(APP_NAME, "Indica primero una "
+                                                 "carpeta que exista.")
+                return
+            self.auto_pill.configure(fg_color="#12261e",
+                                     text_color="#3fb950")
+            self._log(f"🤖 Auto-publicación activada: comprobaré la carpeta "
+                      f"cada {self._interval_minutes()} min.", "ok")
+            patterns = self._ignore_lines()
+            threading.Thread(
+                target=lambda: self.q.put(
+                    ("set_fp", folder_fingerprint(folder, patterns))),
+                daemon=True).start()
+            self._schedule_auto()
+        else:
+            self._cancel_auto()
+            self.auto_pill.configure(fg_color="transparent",
+                                     text_color=MUTED)
+            self._log("🤖 Auto-publicación desactivada.", "dim")
+
+    def _schedule_auto(self):
+        self._cancel_auto()
+        self._auto_job = self.after(self._interval_minutes() * 60 * 1000,
+                                    self._auto_tick)
+
+    def _cancel_auto(self):
+        if self._auto_job is not None:
+            try:
+                self.after_cancel(self._auto_job)
+            except Exception:
+                pass
+            self._auto_job = None
+
+    def _auto_tick(self):
+        self._auto_job = None
+        if not self.v_auto.get():
+            return
+        if self.working or self.scanning:
+            self._schedule_auto()
+            return
+        folder = self._normalize_path(self.e_folder.get())
+        patterns = self._ignore_lines()
+        last_fp = self._last_pub_fp
+        threading.Thread(target=self._auto_check,
+                         args=(folder, patterns, last_fp),
+                         daemon=True).start()
+
+    def _auto_check(self, folder, patterns, last_fp):
+        fp1 = folder_fingerprint(folder, patterns)
+        if fp1 is None:
+            self.q.put(("auto_result", "missing", None))
+            return
+        if last_fp is not None and fp1 == last_fp:
+            self.q.put(("auto_result", "idle", fp1))
+            return
+        time.sleep(5)  # deja que los cambios se asienten
+        fp2 = folder_fingerprint(folder, patterns)
+        if fp2 != fp1:
+            self.q.put(("auto_result", "unstable", None))
+        else:
+            self.q.put(("auto_result", "publish", fp1))
+
+    def _handle_auto_result(self, action, fp):
+        if not self.v_auto.get():
+            return
+        if action == "missing":
+            self._log("🤖 La carpeta ya no existe; auto-publicación "
+                      "desactivada.", "warn")
+            self.v_auto.set(False)
+            self._toggle_auto()
+            return
+        if action == "publish" and not self.working and not self.scanning:
+            self._log("🤖 Cambios detectados — publicando "
+                      "automáticamente…", "out")
+            self._auto_fp = fp
+            self._start_publish(auto=True)
+        elif action == "unstable":
+            self._log("🤖 Aún estás guardando cambios; lo intento en la "
+                      "próxima ronda.", "dim")
+        self._schedule_auto()
+
+    def _auto_abort(self, reason):
+        """Apaga la auto-publicación con un aviso claro."""
+        self._log(f"🤖 {reason} Auto-publicación en pausa.", "warn")
+        if self.v_auto.get():
+            self.v_auto.set(False)
+            self._cancel_auto()
+            self.auto_pill.configure(fg_color="transparent",
+                                     text_color=MUTED)
 
     # ------------------------------------------------------------- #
     #  Análisis manual («🛡 Analizar»)                               #
@@ -996,41 +1440,40 @@ class GitPushStudio(ctk.CTk):
     # ------------------------------------------------------------- #
     #  Publicación (hilo de trabajo + cola de mensajes)              #
     # ------------------------------------------------------------- #
-    def _start_publish(self):
+    def _start_publish(self, auto=False):
         if self.working or self.scanning:
             return
         cfg = self._collect_state()
         cfg["folder"] = self._normalize_path(cfg["folder"])
+        cfg["auto"] = auto
 
         # --- Validaciones ------------------------------------------
-        if not cfg["folder"]:
-            messagebox.showwarning(APP_NAME, "Indica la carpeta del "
-                                             "proyecto.")
-            return
-        if not Path(cfg["folder"]).is_dir():
-            messagebox.showerror(APP_NAME, "La carpeta no existe:\n"
-                                           f"{cfg['folder']}")
+        def fail(msg):
+            if auto:
+                self._auto_abort(msg)
+            else:
+                messagebox.showwarning(APP_NAME, msg)
+
+        if not cfg["folder"] or not Path(cfg["folder"]).is_dir():
+            fail("Indica una carpeta de proyecto que exista.")
             return
         if not cfg["url"]:
-            messagebox.showwarning(APP_NAME, "Indica la URL del repositorio "
-                                             "de GitHub, o créalo con "
-                                             "«➕ Crear repositorio nuevo…».")
+            fail("Indica la URL del repositorio de GitHub, o créalo con "
+                 "«➕ Crear repositorio nuevo…».")
             return
         if not (cfg["url"].startswith("https://")
                 or cfg["url"].startswith("git@")):
-            messagebox.showwarning(
-                APP_NAME, "La URL debe empezar por https:// o git@\n"
-                          "Ejemplo: https://github.com/usuario/repo.git")
+            fail("La URL debe empezar por https:// o git@ — ejemplo: "
+                 "https://github.com/usuario/repo.git")
             return
         if bool(cfg["user"]) != bool(cfg["email"]):
-            messagebox.showwarning(APP_NAME, "Completa nombre Y correo, "
-                                             "o deja ambos vacíos.")
+            fail("Completa nombre Y correo, o deja ambos vacíos.")
             return
         if not cfg["message"]:
             cfg["message"] = "Actualizar proyecto completo"
-        if cfg["stamp"]:
+        if cfg["stamp"] or auto:
             cfg["message"] += datetime.now().strftime(" — %Y-%m-%d %H:%M")
-        if cfg["force"]:
+        if cfg["force"] and not auto:
             if not messagebox.askyesno(
                     APP_NAME,
                     "Has activado el push forzado (-f).\n\n"
@@ -1049,6 +1492,8 @@ class GitPushStudio(ctk.CTk):
         self.progress.set(0)
         self._set_status("●  Trabajando…", "work")
         self._log("─" * 60, "dim")
+        if auto:
+            self._log("🤖 Publicación automática en marcha.", "dim")
 
         threading.Thread(target=self._worker, args=(cfg,),
                          daemon=True).start()
@@ -1126,6 +1571,13 @@ class GitPushStudio(ctk.CTk):
                 if not findings:
                     self.q.put(("log", "  ✔ Sin archivos grandes ni "
                                        "secretos a la vista.", "ok"))
+                elif c.get("auto"):
+                    # En modo automático nunca subimos con hallazgos ni
+                    # abrimos ventanas: se pausa y se avisa.
+                    self.q.put(("log", f"  ⚠ {len(findings)} hallazgo(s).",
+                                "warn"))
+                    self.q.put(("auto_blocked",))
+                    return
                 else:
                     self.q.put(("log", f"  ⚠ {len(findings)} hallazgo(s). "
                                        "Esperando tu decisión…", "warn"))
@@ -1260,6 +1712,12 @@ class GitPushStudio(ctk.CTk):
             self.q.put(("done", False, ""))
 
     # ---------- cola de mensajes hacia la interfaz -----------------
+    def _restore_buttons(self):
+        self.working = False
+        self.btn_publish.configure(state="normal",
+                                   text="🚀  Publicar en GitHub")
+        self.btn_scan.configure(state="normal")
+
     def _poll_queue(self):
         try:
             while True:
@@ -1276,25 +1734,46 @@ class GitPushStudio(ctk.CTk):
                     self._add_ignore_patterns(msg[1])
                 elif kind == "scan_result":
                     self._finish_scan(msg[1], msg[2])
+                elif kind == "set_fp":
+                    self._last_pub_fp = msg[1]
+                elif kind == "auto_result":
+                    self._handle_auto_result(msg[1], msg[2])
+                elif kind == "auto_blocked":
+                    self._restore_buttons()
+                    self.progress.set(0)
+                    self._set_status("●  Hallazgos — revisa con 🛡", "warn")
+                    self._auto_abort("La revisión encontró archivos "
+                                     "grandes o secretos: no he subido "
+                                     "nada. Revísalos con «🛡 Analizar».")
                 elif kind == "cancelled":
-                    self.working = False
-                    self.btn_publish.configure(
-                        state="normal", text="🚀  Publicar en GitHub")
-                    self.btn_scan.configure(state="normal")
+                    self._restore_buttons()
                     self.progress.set(0)
                     self._set_status("●  Listo", "idle")
                 elif kind == "done":
                     ok, web = msg[1], msg[2]
-                    self.working = False
-                    self.btn_publish.configure(
-                        state="normal", text="🚀  Publicar en GitHub")
-                    self.btn_scan.configure(state="normal")
+                    self._restore_buttons()
                     if ok:
                         self.progress.set(1)
                         self.last_repo_web = web
                         self._set_status("●  Publicado con éxito", "ok")
+                        if self._auto_fp:
+                            self._last_pub_fp = self._auto_fp
+                            self._auto_fp = None
+                        else:
+                            folder = self._normalize_path(
+                                self.e_folder.get())
+                            patterns = self._ignore_lines()
+                            threading.Thread(
+                                target=lambda: self.q.put(
+                                    ("set_fp",
+                                     folder_fingerprint(folder, patterns))),
+                                daemon=True).start()
+                        if not self.last_pages_url:
+                            self._log("  ¿Es una página web? Actívala con "
+                                      "«🌍 Publicar como web…».", "dim")
                         self.bell()
                     else:
+                        self._auto_fp = None
                         self._set_status("●  Error — revisa la consola",
                                          "err")
         except queue.Empty:
@@ -1306,6 +1785,451 @@ class GitPushStudio(ctk.CTk):
         self.config_data["last_state"] = self._collect_state()
         self._save_config()
         self.destroy()
+
+
+# ================================================================== #
+#  Diálogo: clonar repositorio                                       #
+# ================================================================== #
+class CloneDialog(ctk.CTkToplevel):
+
+    def __init__(self, app: "GitPushStudio"):
+        super().__init__(app)
+        self.app = app
+        self.q = queue.Queue()
+        self.cloned_path = ""
+
+        self.title("Clonar repositorio de GitHub")
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.after(150, self._safe_grab)
+
+        w, h = 580, 480
+        try:
+            x = app.winfo_x() + (app.winfo_width() - w) // 2
+            y = app.winfo_y() + (app.winfo_height() - h) // 2
+            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            self.geometry(f"{w}x{h}")
+
+        pad = {"padx": 22}
+
+        ctk.CTkLabel(self, text="⬇  Clonar repositorio",
+                     font=app.f_title, text_color=TEXT
+                     ).pack(anchor="w", pady=(18, 0), **pad)
+        ctk.CTkLabel(self, text="Descarga cualquier repositorio de GitHub "
+                                "a la carpeta que elijas.",
+                     font=app.f_small, text_color=MUTED
+                     ).pack(anchor="w", pady=(2, 12), **pad)
+
+        c1 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c1.pack(fill="x", **pad)
+        ctk.CTkLabel(c1, text="🔗  Enlace del repositorio",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        self.e_url = app._entry(
+            c1, "https://github.com/usuario/repositorio.git")
+        self.e_url.pack(fill="x", padx=16, pady=(6, 12))
+        prev = app.e_url.get().strip()
+        if prev:
+            self.e_url.insert(0, prev)
+
+        c2 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c2.pack(fill="x", pady=(12, 0), **pad)
+        ctk.CTkLabel(c2, text="📁  Guardar en",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        rowd = ctk.CTkFrame(c2, fg_color="transparent")
+        rowd.pack(fill="x", padx=16, pady=(6, 0))
+        rowd.grid_columnconfigure(0, weight=1)
+        self.e_dest = app._entry(rowd, str(Path.home() / "Downloads"))
+        self.e_dest.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(rowd, text="Examinar…", width=110, height=36,
+                      font=app.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._browse).grid(row=0, column=1)
+        dflt = app.config_data.get("clone_dest") \
+               or str(Path.home() / "Downloads"
+                      if (Path.home() / "Downloads").is_dir()
+                      else Path.home())
+        self.e_dest.insert(0, dflt)
+        self.v_use = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(c2, text="Usarlo como proyecto actual al terminar",
+                        variable=self.v_use, font=app.f_small,
+                        text_color=MUTED, fg_color=GREEN,
+                        hover_color=GREEN_H, border_color=BORDER,
+                        checkbox_width=18, checkbox_height=18
+                        ).pack(anchor="w", padx=16, pady=(8, 0))
+        ctk.CTkLabel(c2, text="El proyecto se creará como una subcarpeta "
+                             "con el nombre del repositorio. Los "
+                             "repositorios privados requieren haber "
+                             "iniciado sesión con Git Credential Manager.",
+                     font=app.f_small, text_color=MUTED, justify="left",
+                     wraplength=500).pack(anchor="w", padx=16, pady=(6, 12))
+
+        self.lbl_status = ctk.CTkLabel(self, text="", font=app.f_mono_s,
+                                       text_color=MUTED, justify="left",
+                                       wraplength=520)
+        self.lbl_status.pack(anchor="w", pady=(12, 0), **pad)
+
+        rowb = ctk.CTkFrame(self, fg_color="transparent")
+        rowb.pack(fill="x", pady=(10, 18), **pad)
+        rowb.grid_columnconfigure(0, weight=1)
+        self.btn_clone = ctk.CTkButton(
+            rowb, text="Clonar", height=42, font=app.f_btn,
+            corner_radius=10, fg_color=GREEN, hover_color=GREEN_H,
+            text_color="#ffffff", command=self._clone)
+        self.btn_clone.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.btn_folder = ctk.CTkButton(
+            rowb, text="Abrir carpeta", height=42, width=130,
+            font=app.f_body, corner_radius=10, fg_color="transparent",
+            hover_color=PANEL2, border_width=1, border_color=BORDER,
+            text_color=BLUE, state="disabled",
+            command=lambda: open_in_explorer(self.cloned_path))
+        self.btn_folder.grid(row=0, column=1, padx=(0, 10))
+        ctk.CTkButton(rowb, text="Cerrar", height=42, width=90,
+                      font=app.f_body, corner_radius=10,
+                      fg_color="transparent", hover_color=PANEL2,
+                      border_width=1, border_color=BORDER,
+                      text_color=MUTED, command=self.destroy
+                      ).grid(row=0, column=2)
+
+        self.after(80, self._poll)
+
+    # ------------------------------------------------------------- #
+    def _safe_grab(self):
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _browse(self):
+        folder = filedialog.askdirectory(
+            title="¿Dónde guardar el proyecto clonado?")
+        if folder:
+            self.e_dest.delete(0, "end")
+            self.e_dest.insert(0, str(Path(folder)))
+
+    def _status(self, text, color=MUTED):
+        self.lbl_status.configure(text=text, text_color=color)
+
+    # ------------------------------------------------------------- #
+    def _clone(self):
+        url = self.e_url.get().strip()
+        dest = self.app._normalize_path(self.e_dest.get())
+        if not (url.startswith("https://") or url.startswith("git@")):
+            self._status("La URL debe empezar por https:// o git@", RED)
+            return
+        name = repo_name_from_url(url)
+        if not name:
+            self._status("No pude deducir el nombre del repositorio "
+                         "desde la URL.", RED)
+            return
+        try:
+            Path(dest).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self._status(f"No puedo usar esa carpeta destino: {e}", RED)
+            return
+        target = Path(dest) / name
+        if target.exists() and any(target.iterdir()):
+            self._status(f"Ya existe y no está vacía:\n{target}", RED)
+            return
+
+        self.btn_clone.configure(state="disabled", text="Clonando…")
+        self._status("Conectando con GitHub…", MUTED)
+        self.app._log("─" * 60, "dim")
+        self.app._log(f"$ git clone {url}", "cmd")
+        threading.Thread(target=self._worker,
+                         args=(url, dest, target, bool(self.v_use.get())),
+                         daemon=True).start()
+
+    def _worker(self, url, dest, target, use_as_current):
+        lines = []
+
+        def on_line(ln):
+            lines.append(ln)
+            self.q.put(("st", ln))
+
+        rc = run_git_stream(["clone", "--progress", url, str(target)],
+                            cwd=dest, on_line=on_line)
+        if rc == 0:
+            self.q.put(("ok", str(target), url, use_as_current, dest))
+        else:
+            low = " ".join(lines).lower()
+            if ("could not read username" in low
+                    or "authentication" in low or "denied" in low):
+                msg = ("GitHub pidió credenciales. Si el repositorio es "
+                       "privado, inicia sesión una vez con Git Credential "
+                       "Manager (o comprueba tus permisos).")
+            elif "already exists" in low:
+                msg = "La carpeta destino ya existe y no está vacía."
+            elif "not found" in low:
+                msg = ("Repositorio no encontrado: revisa la URL "
+                       "(o es privado y no tienes acceso).")
+            else:
+                msg = "Falló la clonación. Última línea: " + \
+                      (lines[-1] if lines else "sin salida")
+            self.q.put(("err", msg))
+
+    # ------------------------------------------------------------- #
+    def _poll(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                if m[0] == "st":
+                    self._status(m[1], MUTED)
+                elif m[0] == "err":
+                    self._status("✖ " + m[1], RED)
+                    self.btn_clone.configure(state="normal", text="Clonar")
+                    self.app._log("✖ " + m[1], "err")
+                elif m[0] == "ok":
+                    _, target, url, use_as_current, dest = m
+                    self.cloned_path = target
+                    self.app.config_data["clone_dest"] = dest
+                    self.app._save_config()
+                    self._status(f"✔ Clonado en:\n{target}", "#3fb950")
+                    self.btn_clone.configure(state="normal", text="Clonar")
+                    self.btn_folder.configure(state="normal")
+                    self.app._log(f"✔ Repositorio clonado en {target}",
+                                  "ok")
+                    if use_as_current:
+                        self.app.set_current_project(target, url)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(80, self._poll)
+
+
+# ================================================================== #
+#  Diálogo: consolidar el proyecto a un TXT                          #
+# ================================================================== #
+class ConsolidateDialog(ctk.CTkToplevel):
+
+    def __init__(self, app: "GitPushStudio"):
+        super().__init__(app)
+        self.app = app
+        self.q = queue.Queue()
+        self.out_path = ""
+
+        self.title("Consolidar proyecto a TXT")
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.after(150, self._safe_grab)
+
+        w, h = 600, 520
+        try:
+            x = app.winfo_x() + (app.winfo_width() - w) // 2
+            y = app.winfo_y() + (app.winfo_height() - h) // 2
+            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            self.geometry(f"{w}x{h}")
+
+        pad = {"padx": 22}
+
+        ctk.CTkLabel(self, text="📄  Consolidar a TXT",
+                     font=app.f_title, text_color=TEXT
+                     ).pack(anchor="w", pady=(18, 0), **pad)
+        ctk.CTkLabel(self, text="Todo el proyecto (árbol + contenido) en "
+                                "un solo archivo de texto.",
+                     font=app.f_small, text_color=MUTED
+                     ).pack(anchor="w", pady=(2, 12), **pad)
+
+        c1 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c1.pack(fill="x", **pad)
+        ctk.CTkLabel(c1, text="📁  Proyecto a empaquetar",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        rowp = ctk.CTkFrame(c1, fg_color="transparent")
+        rowp.pack(fill="x", padx=16, pady=(6, 12))
+        rowp.grid_columnconfigure(0, weight=1)
+        self.e_proj = app._entry(rowp, "Carpeta del proyecto")
+        self.e_proj.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(rowp, text="Examinar…", width=110, height=36,
+                      font=app.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._browse_proj).grid(row=0, column=1)
+
+        c2 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c2.pack(fill="x", pady=(12, 0), **pad)
+        ctk.CTkLabel(c2, text="💾  Archivo TXT de salida",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        rowo = ctk.CTkFrame(c2, fg_color="transparent")
+        rowo.pack(fill="x", padx=16, pady=(6, 0))
+        rowo.grid_columnconfigure(0, weight=1)
+        self.e_out = app._entry(rowo, "ruta\\del\\proyecto.txt")
+        self.e_out.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(rowo, text="Elegir…", width=110, height=36,
+                      font=app.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._browse_out).grid(row=0, column=1)
+        self.v_ign = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(c2, text="Respetar .gitignore y el cuadro de "
+                                 "ignorar (recomendado)",
+                        variable=self.v_ign, font=app.f_small,
+                        text_color=MUTED, fg_color=GREEN,
+                        hover_color=GREEN_H, border_color=BORDER,
+                        checkbox_width=18, checkbox_height=18
+                        ).pack(anchor="w", padx=16, pady=(8, 0))
+        ctk.CTkLabel(c2, text="Por defecto se llama como el proyecto y se "
+                             "guarda junto a él. Los binarios y los "
+                             "archivos de más de 2 MB se marcan pero no "
+                             "se vuelcan; el TXT nunca se incluye a sí "
+                             "mismo.",
+                     font=app.f_small, text_color=MUTED, justify="left",
+                     wraplength=520).pack(anchor="w", padx=16, pady=(6, 12))
+
+        self.lbl_status = ctk.CTkLabel(self, text="", font=app.f_small,
+                                       text_color=MUTED, justify="left",
+                                       wraplength=540)
+        self.lbl_status.pack(anchor="w", pady=(12, 0), **pad)
+
+        rowb = ctk.CTkFrame(self, fg_color="transparent")
+        rowb.pack(fill="x", pady=(10, 18), **pad)
+        rowb.grid_columnconfigure(0, weight=1)
+        self.btn_go = ctk.CTkButton(
+            rowb, text="Generar TXT", height=42, font=app.f_btn,
+            corner_radius=10, fg_color=GREEN, hover_color=GREEN_H,
+            text_color="#ffffff", command=self._generate)
+        self.btn_go.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.btn_open = ctk.CTkButton(
+            rowb, text="Abrir TXT", height=42, width=110,
+            font=app.f_body, corner_radius=10, fg_color="transparent",
+            hover_color=PANEL2, border_width=1, border_color=BORDER,
+            text_color=BLUE, state="disabled",
+            command=lambda: open_in_explorer(self.out_path))
+        self.btn_open.grid(row=0, column=1, padx=(0, 10))
+        ctk.CTkButton(rowb, text="Cerrar", height=42, width=90,
+                      font=app.f_body, corner_radius=10,
+                      fg_color="transparent", hover_color=PANEL2,
+                      border_width=1, border_color=BORDER,
+                      text_color=MUTED, command=self.destroy
+                      ).grid(row=0, column=2)
+
+        # Prellenar con el proyecto actual
+        proj = app._normalize_path(app.e_folder.get())
+        if proj and Path(proj).is_dir():
+            self.e_proj.insert(0, proj)
+            self._suggest_output()
+
+        self.after(80, self._poll)
+
+    # ------------------------------------------------------------- #
+    def _safe_grab(self):
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _status(self, text, color=MUTED):
+        self.lbl_status.configure(text=text, text_color=color)
+
+    def _suggest_output(self):
+        proj = self.app._normalize_path(self.e_proj.get())
+        p = Path(proj)
+        if proj and p.is_dir():
+            self.e_out.delete(0, "end")
+            self.e_out.insert(0, str(p.parent / (p.name + ".txt")))
+
+    def _browse_proj(self):
+        folder = filedialog.askdirectory(title="Proyecto a empaquetar")
+        if folder:
+            self.e_proj.delete(0, "end")
+            self.e_proj.insert(0, str(Path(folder)))
+            self._suggest_output()
+
+    def _browse_out(self):
+        proj = Path(self.app._normalize_path(self.e_proj.get() or "."))
+        name = (proj.name or "proyecto") + ".txt"
+        chosen = filedialog.asksaveasfilename(
+            title="¿Dónde guardar el TXT?", defaultextension=".txt",
+            initialfile=name,
+            initialdir=str(proj.parent if proj.parent.is_dir()
+                           else Path.home()),
+            filetypes=[("Archivo de texto", "*.txt")])
+        if chosen:
+            self.e_out.delete(0, "end")
+            self.e_out.insert(0, str(Path(chosen)))
+
+    # ------------------------------------------------------------- #
+    def _generate(self):
+        proj = self.app._normalize_path(self.e_proj.get())
+        if not proj or not Path(proj).is_dir():
+            self._status("Indica una carpeta de proyecto que exista.", RED)
+            return
+        out = self.app._normalize_path(self.e_out.get())
+        if not out:
+            p = Path(proj)
+            out = str(p.parent / (p.name + ".txt"))
+            self.e_out.insert(0, out)
+        patterns = self.app._ignore_lines()
+        respect = bool(self.v_ign.get())
+
+        self.btn_go.configure(state="disabled", text="Generando…")
+        self._status("Empaquetando el proyecto…", MUTED)
+        threading.Thread(target=self._worker,
+                         args=(proj, out, patterns, respect),
+                         daemon=True).start()
+
+    def _worker(self, proj, out, patterns, respect):
+        try:
+            stats = consolidate_project(proj, out, patterns,
+                                        respect_ignores=respect)
+            self.q.put(("ok", out, stats,
+                        Path(out).resolve().is_relative_to(
+                            Path(proj).resolve())
+                        if hasattr(Path, "is_relative_to")
+                        else str(Path(out).resolve()).startswith(
+                            str(Path(proj).resolve()))))
+        except Exception as e:
+            self.q.put(("err", str(e)))
+
+    # ------------------------------------------------------------- #
+    def _poll(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                if m[0] == "err":
+                    self._status("✖ " + m[1], RED)
+                    self.btn_go.configure(state="normal",
+                                          text="Generar TXT")
+                elif m[0] == "ok":
+                    _, out, st, inside = m
+                    self.out_path = out
+                    extra = ""
+                    if st["binaries"] or st["big"]:
+                        extra = (f"  ·  omitidos: {st['binaries']} "
+                                 f"binarios, {st['big']} enormes")
+                    if st.get("truncated"):
+                        extra += "  ·  ⚠ salida truncada"
+                    self._status(f"✔ TXT generado: {st['files']} archivos, "
+                                 f"{fmt_size(st['bytes'])} en "
+                                 f"{st['seconds']:.1f} s{extra}\n{out}",
+                                 "#3fb950")
+                    self.btn_go.configure(state="normal",
+                                          text="Generar TXT")
+                    self.btn_open.configure(state="normal")
+                    self.app._log(f"✔ Proyecto consolidado en {out} "
+                                  f"({st['files']} archivos, "
+                                  f"{fmt_size(st['bytes'])}).", "ok")
+                    if inside:
+                        base = Path(out).name
+                        self.app._add_ignore_patterns([base])
+                        self.app._log("  El TXT quedó dentro del proyecto: "
+                                      "lo añadí al cuadro de ignorar para "
+                                      "que no se suba a GitHub.", "warn")
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(80, self._poll)
 
 
 # ================================================================== #
@@ -1458,6 +2382,257 @@ class ReviewDialog(ctk.CTkToplevel):
             self.on_done(decision, selected)
         finally:
             self.destroy()
+
+
+# ================================================================== #
+#  Diálogo: GitHub Pages (publicar como web)                         #
+# ================================================================== #
+class PagesDialog(ctk.CTkToplevel):
+
+    def __init__(self, app: "GitPushStudio", owner, repo):
+        super().__init__(app)
+        self.app = app
+        self.owner = owner
+        self.repo = repo
+        self.q = queue.Queue()
+        self.site_url = ""
+        self._token_visible = False
+
+        self.title("Publicar como web (GitHub Pages)")
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.after(150, self._safe_grab)
+
+        w, h = 560, 560
+        try:
+            x = app.winfo_x() + (app.winfo_width() - w) // 2
+            y = app.winfo_y() + (app.winfo_height() - h) // 2
+            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            self.geometry(f"{w}x{h}")
+
+        pad = {"padx": 22}
+
+        ctk.CTkLabel(self, text="🌍  Publicar como web",
+                     font=app.f_title, text_color=TEXT
+                     ).pack(anchor="w", pady=(18, 0), **pad)
+        ctk.CTkLabel(self, text=f"Repositorio: {owner}/{repo}   ·   "
+                                "Activa GitHub Pages y te doy el enlace.",
+                     font=app.f_small, text_color=MUTED
+                     ).pack(anchor="w", pady=(2, 12), **pad)
+
+        # --- Token ----------------------------------------------------
+        c1 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c1.pack(fill="x", **pad)
+        ctk.CTkLabel(c1, text="🔑  Token de acceso personal",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        rowt = ctk.CTkFrame(c1, fg_color="transparent")
+        rowt.pack(fill="x", padx=16, pady=(6, 0))
+        rowt.grid_columnconfigure(0, weight=1)
+        self.e_token = app._entry(rowt, "ghp_…", show="•")
+        self.e_token.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(rowt, text="👁", width=42, height=36,
+                      font=app.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._toggle_token).grid(row=0, column=1)
+        ctk.CTkLabel(c1, text="El mismo token del botón «➕» (permiso "
+                             "«repo»). Se usa solo para activar Pages.",
+                     font=app.f_small, text_color=MUTED, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(6, 12))
+
+        # --- Origen de la web -------------------------------------------
+        c2 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c2.pack(fill="x", pady=(12, 0), **pad)
+        ctk.CTkLabel(c2, text="📄  Origen de la página",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        rowo = ctk.CTkFrame(c2, fg_color="transparent")
+        rowo.pack(fill="x", padx=16, pady=(6, 0))
+        ctk.CTkLabel(rowo, text="Rama:", font=self.app.f_small,
+                     text_color=MUTED).pack(side="left")
+        self.e_branch = app._entry(rowo, "main")
+        self.e_branch.configure(width=120)
+        self.e_branch.pack(side="left", padx=(6, 14))
+        self.e_branch.insert(0, app.e_branch.get().strip() or "main")
+        ctk.CTkLabel(rowo, text="Carpeta:", font=self.app.f_small,
+                     text_color=MUTED).pack(side="left")
+        self.seg_path = ctk.CTkSegmentedButton(
+            rowo, values=["/ (raíz)", "/docs"], font=app.f_small,
+            fg_color=INPUT, selected_color=BLUE_D,
+            selected_hover_color=BLUE, unselected_color=PANEL2,
+            unselected_hover_color=BORDER, text_color=TEXT,
+            corner_radius=8, height=30)
+        self.seg_path.set("/ (raíz)")
+        self.seg_path.pack(side="left", padx=(6, 0))
+        ctk.CTkLabel(c2, text="Tu web quedará en:  "
+                             f"https://{owner}.github.io/{repo}/\n"
+                             "Requisitos: repositorio público y rama ya "
+                             "publicada.",
+                     font=app.f_small, text_color=MUTED, justify="left"
+                     ).pack(anchor="w", padx=16, pady=(8, 12))
+
+        # --- Estado y botones ------------------------------------------
+        self.lbl_status = ctk.CTkLabel(self, text="", font=app.f_small,
+                                       text_color=MUTED, justify="left",
+                                       wraplength=500)
+        self.lbl_status.pack(anchor="w", pady=(12, 0), **pad)
+
+        rowb = ctk.CTkFrame(self, fg_color="transparent")
+        rowb.pack(fill="x", pady=(10, 18), **pad)
+        rowb.grid_columnconfigure(0, weight=1)
+        self.btn_go = ctk.CTkButton(
+            rowb, text="Activar la web", height=42, font=app.f_btn,
+            corner_radius=10, fg_color=GREEN, hover_color=GREEN_H,
+            text_color="#ffffff", command=self._activate)
+        self.btn_go.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.btn_visit = ctk.CTkButton(
+            rowb, text="Abrir la web", height=42, width=130,
+            font=app.f_body, corner_radius=10, fg_color="transparent",
+            hover_color=PANEL2, border_width=1, border_color=BORDER,
+            text_color=BLUE, state="disabled", command=self._visit)
+        self.btn_visit.grid(row=0, column=1, padx=(0, 10))
+        ctk.CTkButton(rowb, text="Cerrar", height=42, width=90,
+                      font=app.f_body, corner_radius=10,
+                      fg_color="transparent", hover_color=PANEL2,
+                      border_width=1, border_color=BORDER,
+                      text_color=MUTED, command=self.destroy
+                      ).grid(row=0, column=2)
+
+        saved = app.get_saved_token()
+        if saved:
+            self.e_token.insert(0, saved)
+
+        self.after(80, self._poll)
+
+    # ------------------------------------------------------------- #
+    def _safe_grab(self):
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _toggle_token(self):
+        self._token_visible = not self._token_visible
+        self.e_token.configure(show="" if self._token_visible else "•")
+
+    def _status(self, text, color=MUTED):
+        self.lbl_status.configure(text=text, text_color=color)
+
+    def _visit(self):
+        if self.site_url:
+            webbrowser.open(self.site_url)
+
+    # ------------------------------------------------------------- #
+    def _activate(self):
+        token = self.e_token.get().strip()
+        branch = self.e_branch.get().strip() or "main"
+        path = "/docs" if "docs" in self.seg_path.get() else "/"
+        if not token:
+            self._status("Escribe tu token de GitHub.", RED)
+            return
+        self.btn_go.configure(state="disabled", text="Activando…")
+        self._status("Conectando con GitHub…", MUTED)
+        threading.Thread(target=self._worker,
+                         args=(token, branch, path), daemon=True).start()
+
+    def _worker(self, token, branch, path):
+        base = f"/repos/{self.owner}/{self.repo}"
+        try:
+            code, info = github_api("GET", base, token)
+            if code == 401:
+                raise StepError("Token inválido o caducado.")
+            if code == 404:
+                raise StepError("No encuentro el repositorio. ¿Ya lo "
+                                "publicaste con «🚀»?")
+            if code != 200:
+                raise StepError(f"GitHub respondió {code}: "
+                                f"{info.get('message', '')}")
+            if info.get("private"):
+                raise StepError("El repositorio es privado y GitHub Pages "
+                                "gratuito solo funciona con públicos. "
+                                "Hazlo público en github.com → Settings "
+                                "y vuelve a intentarlo.")
+
+            src = {"source": {"branch": branch, "path": path}}
+            code, pages = github_api("GET", base + "/pages", token)
+            if code == 404:
+                self.q.put(("st", "Activando GitHub Pages…"))
+                code, pages = github_api("POST", base + "/pages", token,
+                                         src)
+                if code == 409:
+                    code, pages = github_api("GET", base + "/pages", token)
+                elif code == 422:
+                    raise StepError("GitHub no aceptó la configuración. "
+                                    f"¿Existe la rama «{branch}» en el "
+                                    "repositorio? Publica primero con «🚀».")
+                elif code not in (201, 200):
+                    raise StepError(f"No se pudo activar ({code}): "
+                                    f"{pages.get('message', '')}")
+            elif code == 200:
+                cur = pages.get("source") or {}
+                if (cur.get("branch") != branch
+                        or cur.get("path") != path):
+                    self.q.put(("st", "Actualizando el origen de la web…"))
+                    github_api("PUT", base + "/pages", token, src)
+            else:
+                raise StepError(f"GitHub respondió {code}: "
+                                f"{pages.get('message', '')}")
+
+            # Esperar a que la web se construya
+            url = (pages or {}).get("html_url") \
+                  or f"https://{self.owner}.github.io/{self.repo}/"
+            self.q.put(("st", "La web se está construyendo… (suele "
+                              "tardar menos de un minuto)"))
+            for _ in range(30):
+                time.sleep(3)
+                code, pages = github_api("GET", base + "/pages", token)
+                if code == 200:
+                    url = pages.get("html_url") or url
+                    st = (pages.get("status") or "").lower()
+                    if st == "built":
+                        break
+                    if st == "errored":
+                        raise StepError("GitHub no pudo construir la web. "
+                                        "Revisa que haya un index.html en "
+                                        "el origen elegido.")
+            self.q.put(("ok", url))
+        except StepError as e:
+            self.q.put(("err", str(e)))
+        except Exception as e:
+            self.q.put(("err", f"Error de red: {e}"))
+
+    # ------------------------------------------------------------- #
+    def _poll(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                if m[0] == "st":
+                    self._status(m[1], MUTED)
+                elif m[0] == "err":
+                    self._status("✖ " + m[1], RED)
+                    self.btn_go.configure(state="normal",
+                                          text="Activar la web")
+                elif m[0] == "ok":
+                    self.site_url = m[1]
+                    self.app.last_pages_url = m[1]
+                    self._status("✔ ¡Tu web está en línea!\n" + m[1],
+                                 "#3fb950")
+                    self.btn_go.configure(state="normal",
+                                          text="Activar la web")
+                    self.btn_visit.configure(state="normal")
+                    self.app._log(f"✔ Web activada: {m[1]}", "ok")
+                    self.app._log("  Si acabas de publicar, puede tardar "
+                                  "1-2 min en verse la última versión.",
+                                  "dim")
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(80, self._poll)
 
 
 # ================================================================== #
