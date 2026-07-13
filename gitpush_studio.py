@@ -16,6 +16,15 @@ Uso
 ---
        python gitpush_studio.py
 
+Novedades 1.5
+-------------
+* «⬇⬇ Clonar perfil completo…»: descarga TODOS los repositorios de
+  un perfil de GitHub a una carpeta con el nombre del usuario, en
+  paralelo (2–8 descargas a la vez) y en modo ligero (--depth 1,
+  solo la última versión). Omite forks y lo ya clonado, y
+  opcionalmente une todos los proyectos en un único TXT al terminar
+  (escritura en streaming, tope de 200 MB).
+
 Novedades 1.4
 -------------
 * «⬇ Clonar repositorio…»: descarga cualquier repositorio de GitHub a
@@ -59,6 +68,7 @@ import subprocess
 import webbrowser
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from datetime import datetime
 
@@ -85,7 +95,7 @@ except ImportError:
 #  Constantes y tema (inspirado en el modo oscuro de GitHub)          #
 # ------------------------------------------------------------------ #
 APP_NAME = "GitPush Studio"
-APP_VERSION = "1.4"
+APP_VERSION = "1.5"
 
 CONFIG_DIR = Path.home() / ".gitpush_studio"
 CONFIG_FILE = CONFIG_DIR / "profiles.json"
@@ -124,8 +134,9 @@ CONTENT_BUDGET = 80 * MB    # tope total de lectura para no tardar
 MAX_FINDINGS = 300
 
 # --- Límites del consolidador a TXT -------------------------------- #
-PACK_MAX_FILE  = 2 * MB     # contenido máximo por archivo
-PACK_MAX_TOTAL = 100 * MB   # tamaño máximo del TXT resultante
+PACK_MAX_FILE  = 2 * MB          # contenido máximo por archivo
+PACK_MAX_TOTAL = 100 * MB        # tamaño máximo del TXT (un proyecto)
+PACK_MAX_TOTAL_MULTI = 200 * MB  # tamaño máximo del TXT (perfil entero)
 
 BIN_EXTS = {
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".ico", ".bmp", ".tif",
@@ -194,6 +205,17 @@ def repo_name_from_url(url):
         return repo
     tail = Path((url or "").rstrip("/")).name
     return tail[:-4] if tail.endswith(".git") else tail
+
+
+def parse_username(text):
+    """Acepta «usuario» o «https://github.com/usuario» y devuelve el
+    nombre de usuario, o cadena vacía si no es válido."""
+    t = (text or "").strip().rstrip("/")
+    m = re.search(r"github\.com[:/]+([^/\s]+)", t)
+    if m:
+        t = m.group(1)
+    return t if re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})", t) \
+        else ""
 
 
 def open_in_explorer(path):
@@ -393,11 +415,74 @@ def render_tree(root_name, rel_paths):
     return "\n".join(lines)
 
 
+def _collect_included(project_dir, patterns, exclude_file=None):
+    """Recorre el proyecto una sola vez y devuelve los archivos a
+    incluir como (ruta_relativa, ruta, tamaño), más los ignorados."""
+    project_dir = Path(project_dir)
+    included, skipped = [], 0
+    for root, dirs, files in os.walk(project_dir):
+        relroot = Path(root).relative_to(project_dir).as_posix()
+        if relroot == ".":
+            relroot = ""
+        dirs[:] = [d for d in dirs
+                   if d != ".git"
+                   and not _is_ignored((relroot + "/" + d).lstrip("/"),
+                                       d, patterns)]
+        for name in files:
+            rel = (relroot + "/" + name).lstrip("/")
+            fp = Path(root) / name
+            try:
+                if exclude_file is not None \
+                        and fp.resolve() == exclude_file:
+                    continue                  # jamás incluirse a sí mismo
+                size = fp.stat().st_size
+            except OSError:
+                continue
+            if _is_ignored(rel, name, patterns):
+                skipped += 1
+                continue
+            included.append((rel, fp, size))
+    included.sort(key=lambda x: x[0].lower())
+    return included, skipped
+
+
+def _write_modules(out, included, counters, max_file_bytes,
+                   max_total_bytes):
+    """Vuelca los módulos al TXT en streaming. True si se truncó."""
+    for rel, fp, size in included:
+        out.write(f"MODULO: {rel}\n")
+        out.write("-" * 80 + "\n")
+        if size > max_file_bytes:
+            out.write(f"<ARCHIVO OMITIDO POR TAMAÑO "
+                      f"({fmt_size(size)})>\n")
+            counters["big"] += 1
+        else:
+            raw = None
+            try:
+                raw = fp.read_bytes()
+            except Exception as e:
+                out.write(f"<ERROR AL LEER ARCHIVO: {e}>\n")
+            if raw is not None:
+                if raw and b"\x00" in raw[:4096]:
+                    out.write(f"<ARCHIVO BINARIO OMITIDO "
+                              f"({fmt_size(size)})>\n")
+                    counters["binaries"] += 1
+                else:
+                    out.write(raw.decode("utf-8", "replace").rstrip()
+                              + "\n")
+        out.write("\n" + "=" * 80 + "\n\n")
+        if out.tell() > max_total_bytes:
+            out.write("<SALIDA TRUNCADA: se alcanzó el límite de "
+                      f"{fmt_size(max_total_bytes)}>\n")
+            return True
+    return False
+
+
 def consolidate_project(project_dir, output_file, extra_patterns,
                         respect_ignores=True,
                         max_file_bytes=PACK_MAX_FILE,
                         max_total_bytes=PACK_MAX_TOTAL):
-    """Empaqueta el proyecto en un solo TXT (árbol + contenido).
+    """Empaqueta un proyecto en un solo TXT (árbol + contenido).
 
     Respeta el .gitignore y los patrones dados, omite .git, marca los
     binarios y los archivos enormes, y nunca se incluye a sí mismo.
@@ -414,34 +499,11 @@ def consolidate_project(project_dir, output_file, extra_patterns,
     else:
         patterns = [p.strip() for p in extra_patterns if p.strip()]
 
-    included, skipped_ignored = [], 0
-    for root, dirs, files in os.walk(project_dir):
-        relroot = Path(root).relative_to(project_dir).as_posix()
-        if relroot == ".":
-            relroot = ""
-        dirs[:] = [d for d in dirs
-                   if d != ".git"
-                   and not _is_ignored((relroot + "/" + d).lstrip("/"),
-                                       d, patterns)]
-        for name in files:
-            rel = (relroot + "/" + name).lstrip("/")
-            fp = Path(root) / name
-            try:
-                if fp.resolve() == output_file:
-                    continue                      # jamás incluirse a sí mismo
-                size = fp.stat().st_size
-            except OSError:
-                continue
-            if _is_ignored(rel, name, patterns):
-                skipped_ignored += 1
-                continue
-            included.append((rel, fp, size))
-
-    included.sort(key=lambda x: x[0].lower())
+    included, skipped_ignored = _collect_included(
+        project_dir, patterns, exclude_file=output_file)
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
-    n_bin = n_big = 0
-    truncated = False
+    counters = {"binaries": 0, "big": 0}
     with output_file.open("w", encoding="utf-8", newline="\n") as out:
         out.write(f"MODULO RAIZ: {project_dir.name}\n")
         out.write(f"GENERADO: {datetime.now():%Y-%m-%d %H:%M}   ·   "
@@ -450,37 +512,59 @@ def consolidate_project(project_dir, output_file, extra_patterns,
         out.write("-" * 30 + "\n")
         out.write(render_tree(project_dir.name, [r for r, _, _ in included]))
         out.write("\n\n" + "=" * 80 + "\n\n")
+        truncated = _write_modules(out, included, counters,
+                                   max_file_bytes, max_total_bytes)
 
-        for rel, fp, size in included:
-            out.write(f"MODULO: {rel}\n")
-            out.write("-" * 80 + "\n")
-            if size > max_file_bytes:
-                out.write(f"<ARCHIVO OMITIDO POR TAMAÑO "
-                          f"({fmt_size(size)})>\n")
-                n_big += 1
+    return {"files": len(included), "binaries": counters["binaries"],
+            "big": counters["big"], "ignored": skipped_ignored,
+            "bytes": output_file.stat().st_size,
+            "seconds": time.time() - t0, "truncated": truncated}
+
+
+def consolidate_many(label, repo_dirs, output_file, extra_patterns,
+                     respect_ignores=True,
+                     max_file_bytes=PACK_MAX_FILE,
+                     max_total_bytes=PACK_MAX_TOTAL_MULTI):
+    """Une varios proyectos en un único TXT, uno tras otro, en
+    streaming (nunca carga los proyectos en memoria)."""
+    t0 = time.time()
+    output_file = Path(output_file).resolve()
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    repo_dirs = sorted((Path(d) for d in repo_dirs),
+                       key=lambda p: p.name.lower())
+
+    counters = {"binaries": 0, "big": 0}
+    total_files = total_ignored = 0
+    truncated = False
+    with output_file.open("w", encoding="utf-8", newline="\n") as out:
+        out.write(f"CARPETA RAIZ: {label}\n")
+        out.write(f"GENERADO: {datetime.now():%Y-%m-%d %H:%M}   ·   "
+                  f"REPOSITORIOS: {len(repo_dirs)}\n\n")
+        for i, d in enumerate(repo_dirs, 1):
+            if respect_ignores:
+                patterns = _merged_patterns(d, extra_patterns)
             else:
-                raw = None
-                try:
-                    raw = fp.read_bytes()
-                except Exception as e:
-                    out.write(f"<ERROR AL LEER ARCHIVO: {e}>\n")
-                if raw is not None:
-                    if raw and b"\x00" in raw[:4096]:
-                        out.write(f"<ARCHIVO BINARIO OMITIDO "
-                                  f"({fmt_size(size)})>\n")
-                        n_bin += 1
-                    else:
-                        out.write(raw.decode("utf-8", "replace").rstrip()
-                                  + "\n")
-            out.write("\n" + "=" * 80 + "\n\n")
-            if out.tell() > max_total_bytes:
-                out.write("<SALIDA TRUNCADA: se alcanzó el límite de "
-                          f"{fmt_size(max_total_bytes)}>\n")
+                patterns = [p.strip() for p in extra_patterns
+                            if p.strip()]
+            included, ign = _collect_included(d, patterns,
+                                              exclude_file=output_file)
+            total_files += len(included)
+            total_ignored += ign
+            out.write("#" * 80 + "\n")
+            out.write(f"REPOSITORIO: {d.name}   ({i}/{len(repo_dirs)})\n")
+            out.write("#" * 80 + "\n\n")
+            out.write("ESTRUCTURA DEL PROYECTO\n")
+            out.write("-" * 30 + "\n")
+            out.write(render_tree(d.name, [r for r, _, _ in included]))
+            out.write("\n\n" + "=" * 80 + "\n\n")
+            if _write_modules(out, included, counters,
+                              max_file_bytes, max_total_bytes):
                 truncated = True
                 break
 
-    return {"files": len(included), "binaries": n_bin, "big": n_big,
-            "ignored": skipped_ignored,
+    return {"repos": len(repo_dirs), "files": total_files,
+            "binaries": counters["binaries"], "big": counters["big"],
+            "ignored": total_ignored,
             "bytes": output_file.stat().st_size,
             "seconds": time.time() - t0, "truncated": truncated}
 
@@ -512,6 +596,131 @@ def run_git_stream(args, cwd, on_line, timeout=1800):
             on_line("Tiempo agotado.")
             return 1
     return p.wait()
+
+
+# ------------------------------------------------------------------ #
+#  Clonación masiva de un perfil (en paralelo)                        #
+# ------------------------------------------------------------------ #
+def list_user_repos(username, token=""):
+    """Lista los repositorios de un perfil vía API (paginado).
+
+    Con token, y si el perfil es el del propio token, incluye también
+    los privados. Devuelve una lista de dicts con name, clone_url,
+    fork, private y size_kb.
+    """
+    login = ""
+    if token:
+        code, me = github_api("GET", "/user", token)
+        if code == 200:
+            login = (me.get("login") or "")
+    own = bool(token) and login.lower() == username.lower()
+
+    repos, page = [], 1
+    while True:
+        if own:
+            path = (f"/user/repos?per_page=100&page={page}"
+                    f"&affiliation=owner&sort=full_name")
+        else:
+            path = (f"/users/{username}/repos?per_page=100&page={page}"
+                    f"&sort=full_name")
+        code, body = github_api("GET", path, token)
+        if code == 404:
+            raise StepError(f"El usuario «{username}» no existe en "
+                            "GitHub.")
+        if code == 403:
+            raise StepError("GitHub limitó las peticiones (403). "
+                            "Añade un token para subir el límite.")
+        if code != 200 or not isinstance(body, list):
+            msg = body.get("message", "") if isinstance(body, dict) else ""
+            raise StepError(f"GitHub respondió {code}: {msg}")
+        for r in body:
+            repos.append({"name": r.get("name", ""),
+                          "clone_url": r.get("clone_url", ""),
+                          "fork": bool(r.get("fork")),
+                          "private": bool(r.get("private")),
+                          "size_kb": int(r.get("size") or 0)})
+        if len(body) < 100 or page >= 30:
+            break
+        page += 1
+    return repos
+
+
+def clone_single_repo(repo, base_dir, shallow, token, timeout=900):
+    """Clona un repositorio. Devuelve (nombre, estado, segundos, error).
+
+    Estados: ok | skip (ya existía) | fail.
+    """
+    name = repo["name"]
+    target = Path(base_dir) / name
+    if target.exists() and any(target.iterdir()):
+        return name, "skip", 0.0, "ya existía"
+
+    url = repo["clone_url"]
+    auth_url = url
+    if repo.get("private") and token:
+        # Autenticación solo durante la descarga; luego se limpia.
+        auth_url = url.replace("https://",
+                               f"https://x-access-token:{token}@", 1)
+    args = ["clone"]
+    if shallow:
+        args += ["--depth", "1", "--single-branch"]
+    args += [auth_url, str(target)]
+
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    t0 = time.time()
+    try:
+        p = subprocess.run(["git", *args], cwd=str(base_dir),
+                           capture_output=True, text=True,
+                           encoding="utf-8", errors="replace",
+                           timeout=timeout, creationflags=NO_WINDOW,
+                           env=env)
+    except subprocess.TimeoutExpired:
+        return name, "fail", time.time() - t0, "tiempo agotado"
+    except FileNotFoundError:
+        return name, "fail", 0.0, "git no está instalado"
+
+    if p.returncode != 0:
+        tail = ((p.stderr or "") + (p.stdout or "")).strip().splitlines()
+        msg = tail[-1] if tail else "error desconocido"
+        if token:
+            msg = msg.replace(token, "***")   # jamás mostrar el token
+        return name, "fail", time.time() - t0, msg[:160]
+
+    if auth_url != url:
+        # Dejar el remoto limpio, sin el token dentro.
+        subprocess.run(["git", "remote", "set-url", "origin", url],
+                       cwd=str(target), capture_output=True,
+                       creationflags=NO_WINDOW)
+    return name, "ok", time.time() - t0, ""
+
+
+def bulk_clone(repos, base_dir, shallow, token, workers, on_event,
+               stop_event):
+    """Clona una lista de repos en paralelo con un grupo de hilos."""
+    t0 = time.time()
+    base_dir = Path(base_dir)
+    base_dir.mkdir(parents=True, exist_ok=True)
+    results = {"ok": 0, "skip": 0, "fail": 0, "cancel": 0}
+    fails = []
+
+    def job(r):
+        if stop_event.is_set():
+            return r["name"], "cancel", 0.0, ""
+        on_event("start", r["name"])
+        return clone_single_repo(r, base_dir, shallow, token)
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futures = [ex.submit(job, r) for r in repos]
+        for fut in as_completed(futures):
+            name, st, secs, err = fut.result()
+            results[st] += 1
+            if st == "fail":
+                fails.append(f"{name}: {err}")
+            done = sum(results.values())
+            on_event("done", (name, st, secs, err, done, len(repos)))
+
+    return {"seconds": time.time() - t0, "fails": fails, **results}
 
 
 # ------------------------------------------------------------------ #
@@ -573,15 +782,16 @@ def unprotect_token(entry) -> str:
 def github_api(method, path, token, payload=None, timeout=30):
     """Devuelve (código_http, cuerpo_json). Lanza URLError si no hay red."""
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "GitPush-Studio",
+        "Content-Type": "application/json",
+    }
+    if token:
+        headers["Authorization"] = "Bearer " + token
     req = urllib.request.Request(
-        GITHUB_API + path, data=data, method=method,
-        headers={
-            "Authorization": "Bearer " + token,
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "GitPush-Studio",
-            "Content-Type": "application/json",
-        })
+        GITHUB_API + path, data=data, method=method, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read().decode("utf-8", "replace")
@@ -634,6 +844,7 @@ class GitPushStudio(ctk.CTk):
         self._pages_dlg = None
         self._clone_dlg = None
         self._pack_dlg = None
+        self._bulk_dlg = None
         self._review_event = threading.Event()
         self._review_result = ("cancel", [])
         self._auto_job = None
@@ -657,9 +868,10 @@ class GitPushStudio(ctk.CTk):
         self.after(80, self._poll_queue)
 
         self._log("Bienvenido a GitPush Studio.", "ok")
-        self._log("Publica con «🚀», clona con «⬇», empaqueta a TXT con "
-                  "«📄», activa tu web con «🌍», o deja la "
-                  "auto-publicación vigilando por ti.", "dim")
+        self._log("Publica con «🚀», clona con «⬇» (o un perfil entero "
+                  "con «⬇⬇»), empaqueta a TXT con «📄», activa tu web "
+                  "con «🌍», o deja la auto-publicación vigilando por ti.",
+                  "dim")
 
     # ------------------------------------------------------------- #
     #  Sidebar (perfiles y herramientas)                             #
@@ -722,12 +934,18 @@ class GitPushStudio(ctk.CTk):
                       border_width=1, border_color=BORDER,
                       text_color=TEXT, command=self._open_clone
                       ).grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        ctk.CTkButton(tools, text="⬇⬇ Clonar perfil completo…", height=34,
+                      anchor="w", font=self.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER,
+                      text_color=TEXT, command=self._open_bulk
+                      ).grid(row=1, column=0, sticky="ew", pady=(0, 6))
         ctk.CTkButton(tools, text="📄  Consolidar a TXT…", height=34,
                       anchor="w", font=self.f_body, corner_radius=8,
                       fg_color=PANEL2, hover_color=BORDER,
                       border_width=1, border_color=BORDER,
                       text_color=TEXT, command=self._open_consolidate
-                      ).grid(row=1, column=0, sticky="ew")
+                      ).grid(row=2, column=0, sticky="ew")
 
         ctk.CTkLabel(sb, text="Los perfiles se guardan en\n~/.gitpush_studio",
                      font=self.f_small, text_color=MUTED, justify="left"
@@ -1193,6 +1411,9 @@ class GitPushStudio(ctk.CTk):
 
     def _open_clone(self):
         self._singleton_dialog("_clone_dlg", lambda: CloneDialog(self))
+
+    def _open_bulk(self):
+        self._singleton_dialog("_bulk_dlg", lambda: BulkCloneDialog(self))
 
     def _open_consolidate(self):
         self._singleton_dialog("_pack_dlg",
@@ -1997,6 +2218,379 @@ class CloneDialog(ctk.CTkToplevel):
                                   "ok")
                     if use_as_current:
                         self.app.set_current_project(target, url)
+        except queue.Empty:
+            pass
+        if self.winfo_exists():
+            self.after(80, self._poll)
+
+
+# ================================================================== #
+#  Diálogo: clonar un perfil completo                                #
+# ================================================================== #
+class BulkCloneDialog(ctk.CTkToplevel):
+
+    def __init__(self, app: "GitPushStudio"):
+        super().__init__(app)
+        self.app = app
+        self.q = queue.Queue()
+        self._stop = threading.Event()
+        self._token_visible = False
+        self.base_path = ""
+        self.running = False
+
+        self.title("Clonar un perfil completo de GitHub")
+        self.configure(fg_color=BG)
+        self.resizable(False, False)
+        self.transient(app)
+        self.after(150, self._safe_grab)
+        self.protocol("WM_DELETE_WINDOW", self._close)
+
+        w, h = 620, 640
+        try:
+            x = app.winfo_x() + (app.winfo_width() - w) // 2
+            y = app.winfo_y() + (app.winfo_height() - h) // 2
+            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        except Exception:
+            self.geometry(f"{w}x{h}")
+
+        pad = {"padx": 22}
+
+        ctk.CTkLabel(self, text="⬇⬇  Clonar perfil completo",
+                     font=app.f_title, text_color=TEXT
+                     ).pack(anchor="w", pady=(18, 0), **pad)
+        ctk.CTkLabel(self, text="Descarga todos los repositorios de un "
+                                "perfil, en paralelo y en modo ligero.",
+                     font=app.f_small, text_color=MUTED
+                     ).pack(anchor="w", pady=(2, 12), **pad)
+
+        # --- Perfil y token ---------------------------------------------
+        c1 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c1.pack(fill="x", **pad)
+        ctk.CTkLabel(c1, text="👤  Perfil de GitHub",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        self.e_user = app._entry(
+            c1, "usuario  o  https://github.com/usuario")
+        self.e_user.pack(fill="x", padx=16, pady=(6, 0))
+        rowt = ctk.CTkFrame(c1, fg_color="transparent")
+        rowt.pack(fill="x", padx=16, pady=(8, 0))
+        rowt.grid_columnconfigure(0, weight=1)
+        self.e_token = app._entry(rowt, "Token (opcional)", show="•")
+        self.e_token.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(rowt, text="👁", width=42, height=36,
+                      font=app.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._toggle_token).grid(row=0, column=1)
+        ctk.CTkLabel(c1, text="El token es opcional: sube el límite de "
+                             "peticiones y, si el perfil es el tuyo, "
+                             "incluye también tus repositorios privados.",
+                     font=app.f_small, text_color=MUTED, justify="left",
+                     wraplength=540).pack(anchor="w", padx=16, pady=(6, 12))
+
+        # --- Destino y opciones ------------------------------------------
+        c2 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+                          border_width=1, border_color=BORDER)
+        c2.pack(fill="x", pady=(12, 0), **pad)
+        ctk.CTkLabel(c2, text="📁  Destino y opciones",
+                     font=app.f_section, text_color=TEXT
+                     ).pack(anchor="w", padx=16, pady=(12, 2))
+        rowd = ctk.CTkFrame(c2, fg_color="transparent")
+        rowd.pack(fill="x", padx=16, pady=(6, 0))
+        rowd.grid_columnconfigure(0, weight=1)
+        self.e_dest = app._entry(rowd, str(Path.home() / "Downloads"))
+        self.e_dest.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        ctk.CTkButton(rowd, text="Examinar…", width=110, height=36,
+                      font=app.f_body, corner_radius=8,
+                      fg_color=PANEL2, hover_color=BORDER,
+                      border_width=1, border_color=BORDER, text_color=TEXT,
+                      command=self._browse).grid(row=0, column=1)
+        dflt = app.config_data.get("clone_dest") \
+               or str(Path.home() / "Downloads"
+                      if (Path.home() / "Downloads").is_dir()
+                      else Path.home())
+        self.e_dest.insert(0, dflt)
+
+        rowo = ctk.CTkFrame(c2, fg_color="transparent")
+        rowo.pack(fill="x", padx=16, pady=(8, 0))
+        self.v_shallow = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(rowo, text="Clonación ligera (solo la última "
+                                   "versión, mucho más rápida)",
+                        variable=self.v_shallow, font=app.f_small,
+                        text_color=MUTED, fg_color=GREEN,
+                        hover_color=GREEN_H, border_color=BORDER,
+                        checkbox_width=18, checkbox_height=18
+                        ).pack(anchor="w")
+        self.v_forks = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(rowo, text="Omitir forks (copias de proyectos "
+                                   "ajenos)",
+                        variable=self.v_forks, font=app.f_small,
+                        text_color=MUTED, fg_color=GREEN,
+                        hover_color=GREEN_H, border_color=BORDER,
+                        checkbox_width=18, checkbox_height=18
+                        ).pack(anchor="w", pady=(6, 0))
+        self.v_pack = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(rowo, text="Al terminar, unir todos los proyectos "
+                                   "en un solo TXT",
+                        variable=self.v_pack, font=app.f_small,
+                        text_color=MUTED, fg_color=GREEN,
+                        hover_color=GREEN_H, border_color=BORDER,
+                        checkbox_width=18, checkbox_height=18
+                        ).pack(anchor="w", pady=(6, 0))
+        roww = ctk.CTkFrame(c2, fg_color="transparent")
+        roww.pack(fill="x", padx=16, pady=(8, 0))
+        ctk.CTkLabel(roww, text="Descargas a la vez:", font=app.f_small,
+                     text_color=MUTED).pack(side="left")
+        self.om_workers = ctk.CTkOptionMenu(
+            roww, values=["2", "4", "6", "8"], width=70, height=28,
+            font=app.f_small, fg_color=PANEL2, button_color=BORDER,
+            button_hover_color=MUTED, text_color=TEXT,
+            dropdown_fg_color=PANEL, dropdown_text_color=TEXT,
+            dropdown_hover_color=PANEL2)
+        self.om_workers.set("4")
+        self.om_workers.pack(side="left", padx=(8, 0))
+        ctk.CTkLabel(c2, text="Todo se guarda en una subcarpeta con el "
+                             "nombre del usuario. Lo ya clonado se omite, "
+                             "así puedes repetir la descarga sin rehacer "
+                             "trabajo.",
+                     font=app.f_small, text_color=MUTED, justify="left",
+                     wraplength=540).pack(anchor="w", padx=16, pady=(8, 12))
+
+        # --- Progreso y botones ------------------------------------------
+        self.pbar = ctk.CTkProgressBar(self, height=6, corner_radius=3,
+                                       fg_color=PANEL2,
+                                       progress_color=GREEN_H)
+        self.pbar.set(0)
+        self.pbar.pack(fill="x", pady=(14, 0), **pad)
+        self.lbl_counts = ctk.CTkLabel(self, text="", font=app.f_small,
+                                       text_color=MUTED)
+        self.lbl_counts.pack(anchor="w", pady=(6, 0), **pad)
+        self.lbl_status = ctk.CTkLabel(self, text="", font=app.f_small,
+                                       text_color=MUTED, justify="left",
+                                       wraplength=560)
+        self.lbl_status.pack(anchor="w", pady=(2, 0), **pad)
+
+        rowb = ctk.CTkFrame(self, fg_color="transparent")
+        rowb.pack(fill="x", pady=(12, 18), **pad)
+        rowb.grid_columnconfigure(0, weight=1)
+        self.btn_go = ctk.CTkButton(
+            rowb, text="Descargar todo", height=42, font=app.f_btn,
+            corner_radius=10, fg_color=GREEN, hover_color=GREEN_H,
+            text_color="#ffffff", command=self._start)
+        self.btn_go.grid(row=0, column=0, sticky="ew", padx=(0, 10))
+        self.btn_stop = ctk.CTkButton(
+            rowb, text="Detener", height=42, width=100,
+            font=app.f_body, corner_radius=10, fg_color="transparent",
+            hover_color=PANEL2, border_width=1, border_color=BORDER,
+            text_color=AMBER, state="disabled", command=self._stop_now)
+        self.btn_stop.grid(row=0, column=1, padx=(0, 10))
+        self.btn_folder = ctk.CTkButton(
+            rowb, text="Abrir carpeta", height=42, width=130,
+            font=app.f_body, corner_radius=10, fg_color="transparent",
+            hover_color=PANEL2, border_width=1, border_color=BORDER,
+            text_color=BLUE, state="disabled",
+            command=lambda: open_in_explorer(self.base_path))
+        self.btn_folder.grid(row=0, column=2, padx=(0, 10))
+        ctk.CTkButton(rowb, text="Cerrar", height=42, width=90,
+                      font=app.f_body, corner_radius=10,
+                      fg_color="transparent", hover_color=PANEL2,
+                      border_width=1, border_color=BORDER,
+                      text_color=MUTED, command=self._close
+                      ).grid(row=0, column=3)
+
+        saved = app.get_saved_token()
+        if saved:
+            self.e_token.insert(0, saved)
+
+        self.after(80, self._poll)
+
+    # ------------------------------------------------------------- #
+    def _safe_grab(self):
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+
+    def _toggle_token(self):
+        self._token_visible = not self._token_visible
+        self.e_token.configure(show="" if self._token_visible else "•")
+
+    def _browse(self):
+        folder = filedialog.askdirectory(
+            title="¿Dónde guardar la carpeta del perfil?")
+        if folder:
+            self.e_dest.delete(0, "end")
+            self.e_dest.insert(0, str(Path(folder)))
+
+    def _status(self, text, color=MUTED):
+        self.lbl_status.configure(text=text, text_color=color)
+
+    def _close(self):
+        self._stop.set()
+        self.destroy()
+
+    def _stop_now(self):
+        self._stop.set()
+        self.btn_stop.configure(state="disabled")
+        self._status("Deteniendo… se completa lo que ya está en marcha.",
+                     AMBER)
+
+    # ------------------------------------------------------------- #
+    def _start(self):
+        if self.running:
+            return
+        username = parse_username(self.e_user.get())
+        if not username:
+            self._status("Escribe un usuario válido de GitHub (o pega "
+                         "el enlace de su perfil).", RED)
+            return
+        dest = self.app._normalize_path(self.e_dest.get())
+        try:
+            Path(dest).mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            self._status(f"No puedo usar esa carpeta destino: {e}", RED)
+            return
+        token = self.e_token.get().strip()
+        workers = int(self.om_workers.get())
+
+        self.running = True
+        self._stop.clear()
+        self.n_ok = self.n_skip = self.n_fail = 0
+        self.pbar.set(0)
+        self.lbl_counts.configure(text="")
+        self.btn_go.configure(state="disabled", text="Descargando…")
+        self.btn_stop.configure(state="normal")
+        self.btn_folder.configure(state="disabled")
+        self._status("Buscando los repositorios del perfil…", MUTED)
+        self.app._log("─" * 60, "dim")
+        self.app._log(f"⬇⬇ Clonando el perfil «{username}»…", "out")
+
+        threading.Thread(
+            target=self._worker,
+            args=(username, token, dest, bool(self.v_shallow.get()),
+                  bool(self.v_forks.get()), workers,
+                  bool(self.v_pack.get()), self.app._ignore_lines()),
+            daemon=True).start()
+
+    def _worker(self, username, token, dest, shallow, skip_forks,
+                workers, do_pack, patterns):
+        try:
+            repos = list_user_repos(username, token)
+            total_before = len(repos)
+            if skip_forks:
+                repos = [r for r in repos if not r["fork"]]
+            if not repos:
+                raise StepError("Ese perfil no tiene repositorios para "
+                                "descargar"
+                                + (" (todos eran forks)."
+                                   if total_before else "."))
+            est_kb = sum(r["size_kb"] for r in repos)
+            base = Path(dest) / username
+            self.q.put(("plan", len(repos), est_kb, str(base)))
+
+            summary = bulk_clone(
+                repos, base, shallow, token, workers,
+                on_event=lambda k, p: self.q.put((k, p)),
+                stop_event=self._stop)
+
+            pack_stats, out = None, ""
+            if do_pack and not self._stop.is_set():
+                self.q.put(("st", "Uniendo todos los proyectos en un "
+                                  "solo TXT…"))
+                dirs = [base / r["name"] for r in repos
+                        if (base / r["name"]).is_dir()]
+                out = str(base / f"{username}.txt")
+                pack_stats = consolidate_many(username, dirs, out,
+                                              patterns)
+            self.q.put(("bulk_done", str(base), summary, pack_stats, out))
+        except StepError as e:
+            self.q.put(("err", str(e)))
+        except Exception as e:
+            self.q.put(("err", f"Error: {e}"))
+
+    # ------------------------------------------------------------- #
+    def _update_counts(self):
+        self.lbl_counts.configure(
+            text=f"✓ {self.n_ok} clonados   ·   ↷ {self.n_skip} ya "
+                 f"existían   ·   ✖ {self.n_fail} fallidos")
+
+    def _poll(self):
+        try:
+            while True:
+                m = self.q.get_nowait()
+                kind = m[0]
+                if kind == "st":
+                    self._status(m[1], MUTED)
+                elif kind == "plan":
+                    _, n, est_kb, base = m
+                    self.base_path = base
+                    self._status(f"{n} repositorios encontrados "
+                                 f"(~{fmt_size(est_kb * 1024)} en GitHub "
+                                 "con historial completo).", MUTED)
+                    self.app._log(f"  {n} repositorios por descargar.",
+                                  "dim")
+                elif kind == "start":
+                    self._status(f"Clonando: {m[1]}…", MUTED)
+                elif kind == "done":
+                    name, st, secs, err, done, total = m[1]
+                    self.pbar.set(done / max(1, total))
+                    if st == "ok":
+                        self.n_ok += 1
+                        self.app._log(f"  ✓ {name} ({secs:.1f} s)", "dim")
+                    elif st == "skip":
+                        self.n_skip += 1
+                        self.app._log(f"  ↷ {name} (ya existía)", "dim")
+                    elif st == "cancel":
+                        pass
+                    else:
+                        self.n_fail += 1
+                        self.app._log(f"  ✖ {name}: {err}", "err")
+                    self._update_counts()
+                elif kind == "err":
+                    self.running = False
+                    self._status("✖ " + m[1], RED)
+                    self.btn_go.configure(state="normal",
+                                          text="Descargar todo")
+                    self.btn_stop.configure(state="disabled")
+                    self.app._log("✖ " + m[1], "err")
+                elif kind == "bulk_done":
+                    _, base, s, ps, out = m
+                    self.running = False
+                    self.base_path = base
+                    self.app.config_data["clone_dest"] = \
+                        str(Path(base).parent)
+                    self.app._save_config()
+                    self.btn_go.configure(state="normal",
+                                          text="Descargar todo")
+                    self.btn_stop.configure(state="disabled")
+                    self.btn_folder.configure(state="normal")
+                    self.pbar.set(1)
+                    stopped = s.get("cancel", 0) > 0
+                    txt_line = ""
+                    if ps:
+                        txt_line = (f"\nTXT combinado: {ps['files']} "
+                                    f"archivos de {ps['repos']} repos, "
+                                    f"{fmt_size(ps['bytes'])} en "
+                                    f"{ps['seconds']:.1f} s"
+                                    + ("  ·  ⚠ truncado"
+                                       if ps.get("truncated") else ""))
+                    color = "#3fb950" if not s["fails"] and not stopped \
+                        else AMBER
+                    head = ("✋ Detenido a medias." if stopped
+                            else "✔ ¡Perfil descargado!")
+                    self._status(
+                        f"{head}  {s['ok']} clonados, {s['skip']} ya "
+                        f"existían, {s['fail']} fallidos en "
+                        f"{s['seconds']:.1f} s.{txt_line}\n{base}", color)
+                    self.app._log(f"✔ Perfil completo: {s['ok']} "
+                                  f"clonados, {s['skip']} omitidos, "
+                                  f"{s['fail']} fallidos en "
+                                  f"{s['seconds']:.1f} s → {base}",
+                                  "ok" if not s["fails"] else "warn")
+                    if ps and out:
+                        self.app._log(f"✔ TXT combinado: {out} "
+                                      f"({fmt_size(ps['bytes'])}).", "ok")
         except queue.Empty:
             pass
         if self.winfo_exists():
