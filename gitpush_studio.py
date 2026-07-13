@@ -231,6 +231,31 @@ def open_in_explorer(path):
         pass
 
 
+def place_dialog(win, parent, w, base_h, min_w=520, min_h=420):
+    """Centra una ventana sobre su padre y ACOTA su alto a la pantalla,
+    para que sus botones inferiores nunca queden fuera de vista.
+    La ventana se hace redimensionable como red de seguridad."""
+    try:
+        win.resizable(True, True)
+    except Exception:
+        pass
+    try:
+        screen_h = win.winfo_screenheight()
+    except Exception:
+        screen_h = 720
+    h = min(base_h, max(min_h, screen_h - 120))
+    try:
+        x = parent.winfo_x() + (parent.winfo_width() - w) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - h) // 2
+        win.geometry(f"{w}x{h}+{max(x, 20)}+{max(y, 20)}")
+    except Exception:
+        win.geometry(f"{w}x{h}")
+    try:
+        win.minsize(min_w, min_h)
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ #
 #  Coincidencia estilo .gitignore (simplificada) y patrones           #
 # ------------------------------------------------------------------ #
@@ -521,25 +546,54 @@ def consolidate_project(project_dir, output_file, extra_patterns,
             "seconds": time.time() - t0, "truncated": truncated}
 
 
-def consolidate_many(label, repo_dirs, output_file, extra_patterns,
-                     respect_ignores=True,
+def render_profile_tree(username, repo_names):
+    """Árbol general del perfil: la raíz es el usuario y cada
+    repositorio es una rama."""
+    lines = [username + "/"]
+    names = sorted(repo_names, key=str.lower)
+    for i, name in enumerate(names):
+        last = i == len(names) - 1
+        lines.append(("└── " if last else "├── ") + name + "/")
+    return "\n".join(lines)
+
+
+def consolidate_many(username, repo_dirs, output_file, extra_patterns,
+                     respect_ignores=True, profile_url="",
                      max_file_bytes=PACK_MAX_FILE,
                      max_total_bytes=PACK_MAX_TOTAL_MULTI):
-    """Une varios proyectos en un único TXT, uno tras otro, en
-    streaming (nunca carga los proyectos en memoria)."""
+    """Une los repositorios de un PERFIL de GitHub en un único TXT, en
+    streaming (nunca carga los proyectos en memoria).
+
+    El TXT abre con una cabecera de perfil y un árbol general donde la
+    raíz es el usuario y cada repositorio es una rama; después va el
+    contenido detallado de cada repositorio, uno tras otro."""
     t0 = time.time()
     output_file = Path(output_file).resolve()
     output_file.parent.mkdir(parents=True, exist_ok=True)
     repo_dirs = sorted((Path(d) for d in repo_dirs),
                        key=lambda p: p.name.lower())
+    repo_names = [d.name for d in repo_dirs]
+    if not profile_url:
+        profile_url = f"https://github.com/{username}"
 
     counters = {"binaries": 0, "big": 0}
     total_files = total_ignored = 0
     truncated = False
     with output_file.open("w", encoding="utf-8", newline="\n") as out:
-        out.write(f"CARPETA RAIZ: {label}\n")
-        out.write(f"GENERADO: {datetime.now():%Y-%m-%d %H:%M}   ·   "
-                  f"REPOSITORIOS: {len(repo_dirs)}\n\n")
+        # -------- Cabecera del perfil + árbol general ----------------
+        out.write("#" * 80 + "\n")
+        out.write(f"PERFIL DE GITHUB: {username}\n")
+        out.write("#" * 80 + "\n\n")
+        out.write(f"Perfil: {profile_url}\n")
+        out.write(f"Repositorios: {len(repo_dirs)}   ·   "
+                  f"Generado: {datetime.now():%Y-%m-%d %H:%M}\n\n")
+        out.write("ESTRUCTURA DEL PERFIL "
+                  "(raíz: usuario · ramas: repositorios)\n")
+        out.write("-" * 30 + "\n")
+        out.write(render_profile_tree(username, repo_names))
+        out.write("\n\n" + "=" * 80 + "\n\n")
+
+        # -------- Contenido detallado de cada repositorio ------------
         for i, d in enumerate(repo_dirs, 1):
             if respect_ignores:
                 patterns = _merged_patterns(d, extra_patterns)
@@ -551,7 +605,8 @@ def consolidate_many(label, repo_dirs, output_file, extra_patterns,
             total_files += len(included)
             total_ignored += ign
             out.write("#" * 80 + "\n")
-            out.write(f"REPOSITORIO: {d.name}   ({i}/{len(repo_dirs)})\n")
+            out.write(f"REPOSITORIO {i}/{len(repo_dirs)}: "
+                      f"{username}/{d.name}\n")
             out.write("#" * 80 + "\n\n")
             out.write("ESTRUCTURA DEL PROYECTO\n")
             out.write("-" * 30 + "\n")
@@ -2021,17 +2076,9 @@ class CloneDialog(ctk.CTkToplevel):
 
         self.title("Clonar repositorio de GitHub")
         self.configure(fg_color=BG)
-        self.resizable(False, False)
         self.transient(app)
         self.after(150, self._safe_grab)
-
-        w, h = 580, 480
-        try:
-            x = app.winfo_x() + (app.winfo_width() - w) // 2
-            y = app.winfo_y() + (app.winfo_height() - h) // 2
-            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
-        except Exception:
-            self.geometry(f"{w}x{h}")
+        place_dialog(self, app, 580, 480, min_w=520, min_h=420)
 
         pad = {"padx": 22}
 
@@ -2240,31 +2287,50 @@ class BulkCloneDialog(ctk.CTkToplevel):
 
         self.title("Clonar un perfil completo de GitHub")
         self.configure(fg_color=BG)
-        self.resizable(False, False)
+        self.resizable(True, True)
         self.transient(app)
         self.after(150, self._safe_grab)
         self.protocol("WM_DELETE_WINDOW", self._close)
 
-        w, h = 620, 640
+        # Alto acotado a la pantalla para que los botones siempre entren.
+        w = 620
+        try:
+            screen_h = self.winfo_screenheight()
+        except Exception:
+            screen_h = 720
+        h = min(640, max(520, screen_h - 120))
         try:
             x = app.winfo_x() + (app.winfo_width() - w) // 2
             y = app.winfo_y() + (app.winfo_height() - h) // 2
-            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+            self.geometry(f"{w}x{h}+{max(x, 20)}+{max(y, 20)}")
         except Exception:
             self.geometry(f"{w}x{h}")
+        self.minsize(560, 480)
+
+        # Estructura: cabecera fija · contenido desplazable · pie fijo
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
         pad = {"padx": 22}
 
-        ctk.CTkLabel(self, text="⬇⬇  Clonar perfil completo",
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(header, text="⬇⬇  Clonar perfil completo",
                      font=app.f_title, text_color=TEXT
                      ).pack(anchor="w", pady=(18, 0), **pad)
-        ctk.CTkLabel(self, text="Descarga todos los repositorios de un "
-                                "perfil, en paralelo y en modo ligero.",
+        ctk.CTkLabel(header, text="Descarga todos los repositorios de un "
+                                  "perfil, en paralelo y en modo ligero.",
                      font=app.f_small, text_color=MUTED
                      ).pack(anchor="w", pady=(2, 12), **pad)
 
+        body = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=MUTED)
+        body.grid(row=1, column=0, sticky="nsew")
+
         # --- Perfil y token ---------------------------------------------
-        c1 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+        c1 = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=12,
                           border_width=1, border_color=BORDER)
         c1.pack(fill="x", **pad)
         ctk.CTkLabel(c1, text="👤  Perfil de GitHub",
@@ -2290,7 +2356,7 @@ class BulkCloneDialog(ctk.CTkToplevel):
                      wraplength=540).pack(anchor="w", padx=16, pady=(6, 12))
 
         # --- Destino y opciones ------------------------------------------
-        c2 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+        c2 = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=12,
                           border_width=1, border_color=BORDER)
         c2.pack(fill="x", pady=(12, 0), **pad)
         ctk.CTkLabel(c2, text="📁  Destino y opciones",
@@ -2357,22 +2423,28 @@ class BulkCloneDialog(ctk.CTkToplevel):
                      font=app.f_small, text_color=MUTED, justify="left",
                      wraplength=540).pack(anchor="w", padx=16, pady=(8, 12))
 
-        # --- Progreso y botones ------------------------------------------
-        self.pbar = ctk.CTkProgressBar(self, height=6, corner_radius=3,
+        # --- Pie fijo: progreso y botones (siempre visibles) ------------
+        footer = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=0,
+                              border_width=0)
+        footer.grid(row=2, column=0, sticky="ew")
+        ctk.CTkFrame(footer, height=1, fg_color=BORDER).pack(
+            fill="x", side="top")
+
+        self.pbar = ctk.CTkProgressBar(footer, height=6, corner_radius=3,
                                        fg_color=PANEL2,
                                        progress_color=GREEN_H)
         self.pbar.set(0)
-        self.pbar.pack(fill="x", pady=(14, 0), **pad)
-        self.lbl_counts = ctk.CTkLabel(self, text="", font=app.f_small,
+        self.pbar.pack(fill="x", pady=(12, 0), **pad)
+        self.lbl_counts = ctk.CTkLabel(footer, text="", font=app.f_small,
                                        text_color=MUTED)
         self.lbl_counts.pack(anchor="w", pady=(6, 0), **pad)
-        self.lbl_status = ctk.CTkLabel(self, text="", font=app.f_small,
+        self.lbl_status = ctk.CTkLabel(footer, text="", font=app.f_small,
                                        text_color=MUTED, justify="left",
                                        wraplength=560)
         self.lbl_status.pack(anchor="w", pady=(2, 0), **pad)
 
-        rowb = ctk.CTkFrame(self, fg_color="transparent")
-        rowb.pack(fill="x", pady=(12, 18), **pad)
+        rowb = ctk.CTkFrame(footer, fg_color="transparent")
+        rowb.pack(fill="x", pady=(12, 16), **pad)
         rowb.grid_columnconfigure(0, weight=1)
         self.btn_go = ctk.CTkButton(
             rowb, text="Descargar todo", height=42, font=app.f_btn,
@@ -2501,8 +2573,9 @@ class BulkCloneDialog(ctk.CTkToplevel):
                 dirs = [base / r["name"] for r in repos
                         if (base / r["name"]).is_dir()]
                 out = str(base / f"{username}.txt")
-                pack_stats = consolidate_many(username, dirs, out,
-                                              patterns)
+                pack_stats = consolidate_many(
+                    username, dirs, out, patterns,
+                    profile_url=f"https://github.com/{username}")
             self.q.put(("bulk_done", str(base), summary, pack_stats, out))
         except StepError as e:
             self.q.put(("err", str(e)))
@@ -2610,17 +2683,9 @@ class ConsolidateDialog(ctk.CTkToplevel):
 
         self.title("Consolidar proyecto a TXT")
         self.configure(fg_color=BG)
-        self.resizable(False, False)
         self.transient(app)
         self.after(150, self._safe_grab)
-
-        w, h = 600, 520
-        try:
-            x = app.winfo_x() + (app.winfo_width() - w) // 2
-            y = app.winfo_y() + (app.winfo_height() - h) // 2
-            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
-        except Exception:
-            self.geometry(f"{w}x{h}")
+        place_dialog(self, app, 600, 520, min_w=540, min_h=440)
 
         pad = {"padx": 22}
 
@@ -2994,17 +3059,9 @@ class PagesDialog(ctk.CTkToplevel):
 
         self.title("Publicar como web (GitHub Pages)")
         self.configure(fg_color=BG)
-        self.resizable(False, False)
         self.transient(app)
         self.after(150, self._safe_grab)
-
-        w, h = 560, 560
-        try:
-            x = app.winfo_x() + (app.winfo_width() - w) // 2
-            y = app.winfo_y() + (app.winfo_height() - h) // 2
-            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
-        except Exception:
-            self.geometry(f"{w}x{h}")
+        place_dialog(self, app, 560, 560, min_w=520, min_h=460)
 
         pad = {"padx": 22}
 
@@ -3242,30 +3299,32 @@ class CreateRepoDialog(ctk.CTkToplevel):
 
         self.title("Crear repositorio en GitHub")
         self.configure(fg_color=BG)
-        self.resizable(False, False)
         self.transient(app)
         self.after(150, self._safe_grab)
-
-        w, h = 560, 640
-        try:
-            x = app.winfo_x() + (app.winfo_width() - w) // 2
-            y = app.winfo_y() + (app.winfo_height() - h) // 2
-            self.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
-        except Exception:
-            self.geometry(f"{w}x{h}")
+        place_dialog(self, app, 560, 640, min_w=520, min_h=460)
+        self.grid_rowconfigure(1, weight=1)
+        self.grid_columnconfigure(0, weight=1)
 
         pad = {"padx": 22}
 
-        ctk.CTkLabel(self, text="➕  Crear repositorio en GitHub",
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew")
+        ctk.CTkLabel(header, text="➕  Crear repositorio en GitHub",
                      font=app.f_title, text_color=TEXT
                      ).pack(anchor="w", pady=(18, 0), **pad)
-        ctk.CTkLabel(self, text="Se crea en tu cuenta personal usando la "
-                                "API oficial de GitHub.",
+        ctk.CTkLabel(header, text="Se crea en tu cuenta personal usando "
+                                  "la API oficial de GitHub.",
                      font=app.f_small, text_color=MUTED
                      ).pack(anchor="w", pady=(2, 12), **pad)
 
+        body = ctk.CTkScrollableFrame(
+            self, fg_color="transparent",
+            scrollbar_button_color=BORDER,
+            scrollbar_button_hover_color=MUTED)
+        body.grid(row=1, column=0, sticky="nsew")
+
         # --- Token ----------------------------------------------------
-        c1 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+        c1 = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=12,
                           border_width=1, border_color=BORDER)
         c1.pack(fill="x", **pad)
         ctk.CTkLabel(c1, text="🔑  Token de acceso personal",
@@ -3300,7 +3359,7 @@ class CreateRepoDialog(ctk.CTkToplevel):
         ).pack(anchor="w", padx=16, pady=(6, 12))
 
         # --- Datos del repositorio -------------------------------------
-        c2 = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=12,
+        c2 = ctk.CTkFrame(body, fg_color=PANEL, corner_radius=12,
                           border_width=1, border_color=BORDER)
         c2.pack(fill="x", pady=(12, 0), **pad)
         ctk.CTkLabel(c2, text="📦  Datos del repositorio",
@@ -3334,14 +3393,18 @@ class CreateRepoDialog(ctk.CTkToplevel):
         if saved:
             self.e_token.insert(0, saved)
 
-        # --- Estado y botones ------------------------------------------
-        self.lbl_status = ctk.CTkLabel(self, text="", font=app.f_small,
+        # --- Pie fijo: estado y botones (siempre visibles) --------------
+        footer = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=0)
+        footer.grid(row=2, column=0, sticky="ew")
+        ctk.CTkFrame(footer, height=1, fg_color=BORDER).pack(
+            fill="x", side="top")
+        self.lbl_status = ctk.CTkLabel(footer, text="", font=app.f_small,
                                        text_color=MUTED, justify="left",
                                        wraplength=500)
         self.lbl_status.pack(anchor="w", pady=(12, 0), **pad)
 
-        rowb = ctk.CTkFrame(self, fg_color="transparent")
-        rowb.pack(fill="x", pady=(10, 18), **pad)
+        rowb = ctk.CTkFrame(footer, fg_color="transparent")
+        rowb.pack(fill="x", pady=(10, 16), **pad)
         rowb.grid_columnconfigure(0, weight=1)
         self.btn_create = ctk.CTkButton(
             rowb, text="Crear repositorio", height=42, font=app.f_btn,
