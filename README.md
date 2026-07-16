@@ -4,7 +4,7 @@
 
 GitPush Studio es una aplicación de escritorio desarrollada en **Python** que simplifica por completo el proceso de publicar proyectos locales en GitHub. Está diseñada especialmente para usuarios que prefieren una interfaz gráfica en lugar de recordar comandos de Git.
 
-Con unos pocos clics podrás inicializar un repositorio, configurar Git, crear commits, enlazar un repositorio remoto y publicar tu proyecto de forma segura.
+Con unos pocos clics podrás inicializar un repositorio, configurar Git, crear commits, clonar repositorios, clonar todos los repositorios de un usuario, enlazar un repositorio remoto y publicar tu proyecto de forma segura.
 
 ---
 
