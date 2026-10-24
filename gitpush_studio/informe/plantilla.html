@@ -1,0 +1,883 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Informe local: no puede cargar NADA de fuera (ni fuentes, ni
+     scripts, ni imágenes remotas). Lo que analiza se queda en tu equipo. -->
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<title>__TITULO__</title>
+<style>
+:root {
+  color-scheme: light;
+  --page: #f9f9f7;
+  --surface: #fcfcfb;
+  --ink: #0b0b0b;
+  --ink-2: #52514e;
+  --muted: #898781;
+  --grid: #e1e0d9;
+  --axis: #c3c2b7;
+  --ring: rgba(11, 11, 11, 0.10);
+  --good: #006300;
+  --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a;
+  --s4: #eda100; --s5: #e87ba4; --s6: #008300;
+  --otros: #b8b6ae;
+  --q0: #e1e0d9;
+  --q1: #cde2fb; --q2: #9ec5f4; --q3: #6da7ec; --q4: #3987e5;
+  --q5: #256abf; --q6: #184f95; --q7: #0d366b;
+}
+@media (prefers-color-scheme: dark) {
+  :root:where(:not([data-theme="light"])) {
+    color-scheme: dark;
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7;
+    --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+    --ring: rgba(255, 255, 255, 0.10); --good: #0ca30c;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+    --s4: #c98500; --s5: #d55181; --s6: #008300;
+    --otros: #5c5b56;
+    --q0: #2c2c2a;
+    --q1: #104281; --q2: #1c5cab; --q3: #2a78d6; --q4: #3987e5;
+    --q5: #6da7ec; --q6: #9ec5f4; --q7: #cde2fb;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7;
+  --muted: #898781; --grid: #2c2c2a; --axis: #383835;
+  --ring: rgba(255, 255, 255, 0.10); --good: #0ca30c;
+  --s1: #3987e5; --s2: #d95926; --s3: #199e70;
+  --s4: #c98500; --s5: #d55181; --s6: #008300;
+  --otros: #5c5b56;
+  --q0: #2c2c2a;
+  --q1: #104281; --q2: #1c5cab; --q3: #2a78d6; --q4: #3987e5;
+  --q5: #6da7ec; --q6: #9ec5f4; --q7: #cde2fb;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--page);
+  color: var(--ink);
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+main { max-width: 1120px; margin: 0 auto; padding: 24px 16px 64px; }
+header.cabecera {
+  display: flex; flex-wrap: wrap; gap: 8px 16px;
+  align-items: flex-end; justify-content: space-between;
+  margin-bottom: 20px;
+}
+h1 { font-size: 26px; line-height: 1.2; margin: 0; overflow-wrap: anywhere; }
+h2 { font-size: 18px; margin: 36px 0 12px; }
+h3 { font-size: 15px; margin: 0; }
+.sub { color: var(--ink-2); margin: 4px 0 0; font-size: 14px; }
+.tema {
+  font: inherit; font-size: 13px; color: var(--ink-2);
+  background: var(--surface); border: 1px solid var(--ring);
+  border-radius: 8px; padding: 6px 12px; cursor: pointer;
+}
+.kpis {
+  display: grid; gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+}
+.kpi, .tarjeta {
+  background: var(--surface); border: 1px solid var(--ring);
+  border-radius: 12px;
+}
+.kpi { padding: 14px 16px; }
+.kpi .etiqueta { color: var(--ink-2); font-size: 13px; }
+.kpi .valor { font-size: 26px; font-weight: 600; line-height: 1.25; }
+.kpi .nota { color: var(--muted); font-size: 12px; }
+.kpi.heroe .valor { font-size: 48px; }
+.tarjeta { padding: 16px; margin-bottom: 16px; }
+.tarjeta header {
+  display: flex; gap: 12px; align-items: baseline;
+  justify-content: space-between; margin-bottom: 8px;
+}
+.tarjeta .ayuda { color: var(--ink-2); font-size: 13px; margin: 2px 0 10px; }
+.ver-tabla {
+  font: inherit; font-size: 12px; color: var(--ink-2); flex: none;
+  background: none; border: 1px solid var(--ring); border-radius: 6px;
+  padding: 3px 9px; cursor: pointer;
+}
+.grafico { width: 100%; }
+.grafico svg { display: block; width: 100%; overflow: visible; }
+svg text { fill: var(--ink-2); font-size: 12px; }
+svg text.valor { fill: var(--ink); }
+svg .eje { stroke: var(--axis); stroke-width: 1; }
+svg .rejilla { stroke: var(--grid); stroke-width: 1; }
+svg .marca { cursor: default; outline: none; }
+svg .marca:hover .relleno, svg .marca:focus .relleno { filter: brightness(1.15); }
+svg .marca:focus-visible .golpe { stroke: var(--ink); stroke-width: 1.5; }
+.leyenda {
+  display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px;
+  font-size: 13px; color: var(--ink-2); padding: 0; list-style: none;
+}
+.leyenda li { display: flex; align-items: center; gap: 6px; }
+.muestra { width: 10px; height: 10px; border-radius: 2px; flex: none; }
+.leyenda .num { color: var(--ink); font-variant-numeric: tabular-nums; }
+.tabla-envoltura { overflow-x: auto; margin-top: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td {
+  text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--grid);
+  vertical-align: top;
+}
+th { color: var(--ink-2); font-weight: 600; white-space: nowrap; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; }
+td.ruta { overflow-wrap: anywhere; white-space: pre-line; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+.vacio { color: var(--muted); font-size: 14px; margin: 4px 0; }
+.dos { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.dos .tarjeta { margin-bottom: 0; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 8px; padding: 0; list-style: none; }
+.chips li {
+  border: 1px solid var(--ring); border-radius: 999px; padding: 3px 12px;
+  font-size: 13px; color: var(--ink-2);
+}
+.chips b { color: var(--ink); font-weight: 600; }
+.aviso { color: var(--ink-2); font-size: 13px; margin: 6px 0 0; }
+.tip {
+  position: fixed; z-index: 10; pointer-events: none; display: none;
+  background: var(--surface); color: var(--ink);
+  border: 1px solid var(--ring); border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+  padding: 8px 10px; font-size: 13px; max-width: 320px;
+}
+.tip strong { display: block; font-size: 15px; }
+.tip span { color: var(--ink-2); overflow-wrap: anywhere; }
+footer.pie { color: var(--muted); font-size: 12px; margin-top: 40px; }
+@media print { .ver-tabla, .tema { display: none; } }
+</style>
+</head>
+<body>
+<main id="raiz">
+  <noscript>Este informe necesita JavaScript para dibujar los gráficos.</noscript>
+</main>
+<div class="tip" id="tip" role="status" aria-live="polite"></div>
+<script id="datos" type="application/json">__DATOS__</script>
+<script>
+// @ts-check
+"use strict";
+
+/**
+ * Informe de analíticas de GitPush Studio.
+ *
+ * Todo lo que viene del proyecto (nombres de archivo, de autores, textos de
+ * los TODO) es texto NO confiable: se inserta siempre con `textContent` o
+ * `createTextNode`, nunca con `innerHTML`.
+ *
+ * @typedef {{code:number, comment:number, blank:number}} Lineas
+ * @typedef {{name:string, kind:string, files:number, code:number,
+ *   comment:number, blank:number, bytes:number, lines:number,
+ *   comment_ratio:number}} Lenguaje
+ * @typedef {{name:string, commits:number, added:number, deleted:number,
+ *   first:number, last:number}} Autor
+ * @typedef {{path:string, commits:number, added:number, deleted:number,
+ *   exists:boolean, lines_changed:number}} Cambio
+ * @typedef {{commits:number, first:number, last:number, added:number,
+ *   deleted:number, bus_factor:number, truncated:boolean, shallow:boolean,
+ *   authors:Autor[], months:Array<[string, number]>, heatmap:number[][],
+ *   churn:Cambio[]}} Historial
+ * @typedef {{name:string, generated_at:string, seconds:number, files:number,
+ *   bytes:number, ignored:number, depth:number, version:string,
+ *   own:Object<string, Lineas>, generated:Object<string, Lineas>,
+ *   languages:Lenguaje[], generated_languages:Lenguaje[],
+ *   generated_files:number,
+ *   binary_groups:Array<{group:string, files:number, bytes:number}>,
+ *   largest:Array<{path:string, bytes:number}>,
+ *   longest:Array<{path:string, code:number}>,
+ *   duplicates:Array<{size:number, wasted:number, paths:string[]}>,
+ *   duplicate_groups_total:number, wasted_bytes:number,
+ *   markers:Object<string, number>,
+ *   marker_samples:Array<{rel:string, line:number, kind:string, text:string}>,
+ *   histogram:Array<{range:string, files:number, bytes:number}>,
+ *   unreadable:number, git:(Historial|null)}} Informe
+ */
+
+(function () {
+  const SVG = "http://www.w3.org/2000/svg";
+  const DIAS = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"];
+  const CATEGORIAS = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+  const MAX_SEGMENTOS = CATEGORIAS.length;
+
+  const nodoDatos = document.getElementById("datos");
+  /** @type {Informe} */
+  const D = JSON.parse((nodoDatos && nodoDatos.textContent) || "{}");
+  const raiz = /** @type {HTMLElement} */ (document.getElementById("raiz"));
+  const tip = /** @type {HTMLElement} */ (document.getElementById("tip"));
+
+  // ---- formato -----------------------------------------------------------
+  /** @param {number} n */
+  function num(n) {
+    return String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  }
+  /** @param {number} n */
+  function bytes(n) {
+    if (n >= 1073741824) return (n / 1073741824).toFixed(1) + " GB";
+    if (n >= 1048576) return Math.round(n / 1048576) + " MB";
+    if (n >= 1024) return Math.round(n / 1024) + " KB";
+    return n + " B";
+  }
+  /** @param {number} n */
+  function compacto(n) {
+    if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1).replace(".", ",") + " M";
+    if (n >= 1e3) return (n / 1e3).toFixed(n >= 1e4 ? 0 : 1).replace(".", ",") + " K";
+    return String(n);
+  }
+  /** @param {number} parte @param {number} todo */
+  function pct(parte, todo) {
+    return todo ? Math.round((100 * parte) / todo) + " %" : "—";
+  }
+  /** @param {number} marca */
+  function fecha(marca) {
+    const d = new Date(marca * 1000);
+    const dos = (/** @type {number} */ x) => (x < 10 ? "0" : "") + x;
+    return d.getFullYear() + "-" + dos(d.getMonth() + 1) + "-" + dos(d.getDate());
+  }
+  /** Un tope «redondo» para el eje, lo más ajustado posible al máximo
+   * (1, 1,2, 1,5, 2, 2,5, 3, 4, 5, 6, 8 × 10^k): un eje que llega a 500 con
+   * datos que no pasan de 220 desperdicia la mitad del gráfico.
+   * @param {number} max */
+  function tope(max) {
+    if (max <= 0) return 1;
+    const p = Math.pow(10, Math.floor(Math.log10(max)));
+    for (const m of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) {
+      if (m * p >= max) return Math.round(m * p * 1e6) / 1e6;
+    }
+    return 10 * p;
+  }
+  /** Relleno con un color del tema: como variable CSS, para que cambiar
+   * de tema no obligue a redibujar nada. @param {string} variable */
+  function relleno(variable) { return "fill:var(" + variable + ")"; }
+
+  // ---- DOM ---------------------------------------------------------------
+  /**
+   * Crea un elemento. Los hijos de texto pasan por createTextNode: el
+   * contenido del proyecto nunca se interpreta como HTML.
+   * @param {string} tag
+   * @param {Object<string, string>} [attrs]
+   * @param {...(Node|string|number|null|undefined)} hijos
+   * @returns {HTMLElement}
+   */
+  function el(tag, attrs, ...hijos) {
+    const e = document.createElement(tag);
+    if (attrs) for (const k of Object.keys(attrs)) e.setAttribute(k, attrs[k]);
+    for (const h of hijos) {
+      if (h === null || h === undefined) continue;
+      e.appendChild(typeof h === "object" ? h : document.createTextNode(String(h)));
+    }
+    return e;
+  }
+  /**
+   * @param {string} tag
+   * @param {Object<string, string|number>} [attrs]
+   * @returns {SVGElement}
+   */
+  function s(tag, attrs) {
+    const e = /** @type {SVGElement} */ (document.createElementNS(SVG, tag));
+    if (attrs) for (const k of Object.keys(attrs)) e.setAttribute(k, String(attrs[k]));
+    return e;
+  }
+  /** @param {SVGElement} padre @param {number} x @param {number} y
+   *  @param {string} texto @param {string} [clase] @param {string} [ancla] */
+  function texto(padre, x, y, texto, clase, ancla) {
+    const t = s("text", { x: x, y: y });
+    if (clase) t.setAttribute("class", clase);
+    if (ancla) t.setAttribute("text-anchor", ancla);
+    t.appendChild(document.createTextNode(texto));
+    padre.appendChild(t);
+    return t;
+  }
+
+  // ---- tooltip -----------------------------------------------------------
+  /**
+   * El valor manda (en negrita) y la etiqueta acompaña. Todo lo que
+   * enseña también está en la tabla de cada gráfico: el tooltip ayuda,
+   * no esconde.
+   * @param {Element} marca
+   * @param {string} valor
+   * @param {string} etiqueta
+   */
+  function conTip(marca, valor, etiqueta) {
+    marca.setAttribute("tabindex", "0");
+    marca.setAttribute("aria-label", etiqueta + ": " + valor);
+    /** @param {number} x @param {number} y */
+    const mostrar = (x, y) => {
+      tip.textContent = "";
+      tip.appendChild(el("strong", undefined, valor));
+      tip.appendChild(el("span", undefined, etiqueta));
+      tip.style.display = "block";
+      const r = tip.getBoundingClientRect();
+      const izq = Math.min(x + 14, window.innerWidth - r.width - 8);
+      const arr = y - r.height - 12 < 8 ? y + 16 : y - r.height - 12;
+      tip.style.left = Math.max(8, izq) + "px";
+      tip.style.top = arr + "px";
+    };
+    marca.addEventListener("pointermove", (ev) => {
+      const e = /** @type {PointerEvent} */ (ev);
+      mostrar(e.clientX, e.clientY);
+    });
+    marca.addEventListener("focus", () => {
+      const r = marca.getBoundingClientRect();
+      mostrar(r.left + r.width / 2, r.top);
+    });
+    marca.addEventListener("pointerleave", ocultarTip);
+    marca.addEventListener("blur", ocultarTip);
+  }
+  function ocultarTip() { tip.style.display = "none"; }
+
+  // ---- tarjetas y tablas -------------------------------------------------
+  /**
+   * @param {string} titulo
+   * @param {string|null} ayuda
+   * @param {HTMLElement|null} gemela  la tabla accesible del gráfico
+   * @returns {{tarjeta:HTMLElement, cuerpo:HTMLElement}}
+   */
+  function tarjeta(titulo, ayuda, gemela) {
+    const cabecera = el("header", undefined, el("h3", undefined, titulo));
+    const t = el("section", { class: "tarjeta" }, cabecera);
+    if (ayuda) t.appendChild(el("p", { class: "ayuda" }, ayuda));
+    const cuerpo = el("div", { class: "grafico" });
+    t.appendChild(cuerpo);
+    if (gemela) {
+      const envoltura = gemela;
+      envoltura.hidden = true;
+      const boton = el("button", { class: "ver-tabla", type: "button",
+                                   "aria-expanded": "false" }, "Ver tabla");
+      boton.addEventListener("click", () => {
+        envoltura.hidden = !envoltura.hidden;
+        boton.setAttribute("aria-expanded", String(!envoltura.hidden));
+        boton.textContent = envoltura.hidden ? "Ver tabla" : "Ocultar tabla";
+      });
+      cabecera.appendChild(boton);
+      t.appendChild(envoltura);
+    }
+    return { tarjeta: t, cuerpo: cuerpo };
+  }
+
+  /**
+   * @param {Array<{t:string, n?:boolean}>} columnas
+   * @param {Array<Array<string|number>>} filas
+   * @param {number[]} [rutas]  índices de columnas con rutas de archivo
+   */
+  function tabla(columnas, filas, rutas) {
+    const cab = el("tr");
+    for (const c of columnas) cab.appendChild(el("th", c.n ? { class: "n" } : undefined, c.t));
+    const cuerpo = el("tbody");
+    for (const f of filas) {
+      const tr = el("tr");
+      f.forEach((v, i) => {
+        const clase = columnas[i] && columnas[i].n ? "n"
+          : (rutas && rutas.indexOf(i) >= 0 ? "ruta" : "");
+        tr.appendChild(el("td", clase ? { class: clase } : undefined, v));
+      });
+      cuerpo.appendChild(tr);
+    }
+    // Envuelta en una caja con desplazamiento propio: una tabla ancha se
+    // desplaza dentro de su tarjeta, nunca empuja la página en un móvil.
+    return el("div", { class: "tabla-envoltura" },
+              el("table", undefined, el("thead", undefined, cab), cuerpo));
+  }
+
+  // ---- gráficos ----------------------------------------------------------
+  const pendientes = /** @type {Array<() => void>} */ ([]);
+  /**
+   * Registra un gráfico que se dibuja a la medida de su caja. NO se dibuja
+   * aquí: mientras la tarjeta no está en el documento su ancho es 0. Se
+   * dibuja al final (`dibujarTodo`) y cada vez que su caja cambia de ancho.
+   * @param {HTMLElement} cuerpo @param {(ancho:number) => SVGElement} pinta
+   */
+  function responsivo(cuerpo, pinta) {
+    let ultimo = -1;
+    const hacer = () => {
+      const ancho = Math.max(240, Math.floor(cuerpo.clientWidth));
+      if (ancho === ultimo) return;
+      ultimo = ancho;
+      cuerpo.textContent = "";
+      cuerpo.appendChild(pinta(ancho));
+    };
+    pendientes.push(() => {
+      hacer();
+      if (typeof ResizeObserver === "function") new ResizeObserver(hacer).observe(cuerpo);
+      else window.addEventListener("resize", hacer);
+    });
+  }
+  function dibujarTodo() {
+    for (const p of pendientes.splice(0)) p();
+  }
+
+  /** Rectángulo con el extremo de datos redondeado (4 px) y la base recta.
+   * @param {number} x @param {number} y @param {number} w @param {number} h */
+  function barraH(x, y, w, h) {
+    const r = Math.min(4, w, h / 2);
+    if (w <= 0) return "";
+    return "M" + x + "," + y + "h" + (w - r) + "a" + r + "," + r + " 0 0 1 " + r + "," + r +
+      "v" + (h - 2 * r) + "a" + r + "," + r + " 0 0 1 " + (-r) + "," + r + "h" + (r - w) + "z";
+  }
+  /**
+   * Barras horizontales de UNA serie: un solo color para todas (el largo
+   * ya dice cuánto; teñirlas por tamaño gastaría el color en repetirlo).
+   * @param {Array<{etiqueta:string, valor:number, texto:string, detalle:string}>} filas
+   */
+  function barras(filas) {
+    return (/** @type {number} */ ancho) => {
+      const alto = 18, paso = 30, margen = 8;
+      const largos = filas.map((f) => Math.min(42, f.etiqueta.length));
+      const izq = Math.min(Math.max(80, Math.max(...largos, 4) * 7.2), ancho * 0.38);
+      const dcha = 72;
+      const util = Math.max(40, ancho - izq - dcha);
+      const max = Math.max(...filas.map((f) => f.valor), 1);
+      const svg = s("svg", { width: ancho, height: filas.length * paso + margen,
+                             role: "img" });
+      filas.forEach((f, i) => {
+        const y = i * paso + 4;
+        const w = Math.max(f.valor > 0 ? 2 : 0, (f.valor / max) * util);
+        const g = s("g", { class: "marca" });
+        g.appendChild(s("rect", { class: "golpe", x: 0, y: y - 5, width: ancho,
+                                  height: paso, fill: "transparent" }));
+        const p = s("path", { class: "relleno", d: barraH(izq, y, w, alto),
+                              style: relleno("--s1") });
+        g.appendChild(p);
+        const etq = f.etiqueta.length > 42 ? "…" + f.etiqueta.slice(-41) : f.etiqueta;
+        texto(g, izq - 8, y + 13, etq, "", "end");
+        texto(g, izq + w + 6, y + 13, f.texto, "valor");
+        conTip(g, f.texto, f.detalle);
+        svg.appendChild(g);
+      });
+      svg.appendChild(s("line", { class: "eje", x1: izq, x2: izq, y1: 0,
+                                  y2: filas.length * paso }));
+      return svg;
+    };
+  }
+
+  /**
+   * Barra apilada de composición: hasta seis segmentos con nombre y el
+   * resto en «Otros» (gris). Hueco de 2 px entre segmentos, extremos
+   * redondeados. Las etiquetas solo van dentro si caben de verdad.
+   * @param {Array<{nombre:string, valor:number}>} partes
+   * @param {(v:number) => string} formato
+   */
+  function composicion(partes, formato) {
+    const total = partes.reduce((a, p) => a + p.valor, 0) || 1;
+    return (/** @type {number} */ ancho) => {
+      const alto = 22, hueco = 2;
+      const svg = s("svg", { width: ancho, height: alto, role: "img" });
+      const util = ancho - hueco * Math.max(0, partes.length - 1);
+      let x = 0;
+      partes.forEach((p, i) => {
+        const w = Math.max(1, (p.valor / total) * util);
+        const fill = relleno(p.nombre === "Otros" ? "--otros" : CATEGORIAS[i]);
+        const g = s("g", { class: "marca" });
+        const r = Math.min(4, w / 2);
+        const primero = i === 0, ultimo = i === partes.length - 1;
+        g.appendChild(s("rect", { class: "golpe", x: x, y: -4, width: w + hueco,
+                                  height: alto + 8, fill: "transparent" }));
+        g.appendChild(s("path", { class: "relleno", style: fill, d:
+          "M" + (x + (primero ? r : 0)) + ",0" +
+          "h" + (w - (primero ? r : 0) - (ultimo ? r : 0)) +
+          (ultimo ? "a" + r + "," + r + " 0 0 1 " + r + "," + r + "v" + (alto - 2 * r) +
+                    "a" + r + "," + r + " 0 0 1 " + (-r) + "," + r : "v" + alto) +
+          "h" + (-(w - (primero ? r : 0) - (ultimo ? r : 0))) +
+          (primero ? "a" + r + "," + r + " 0 0 1 " + (-r) + "," + (-r) + "v" + (-(alto - 2 * r)) +
+                     "a" + r + "," + r + " 0 0 1 " + r + "," + (-r) : "v" + (-alto)) + "z" }));
+        conTip(g, formato(p.valor) + " · " + pct(p.valor, total), p.nombre);
+        svg.appendChild(g);
+        x += w + hueco;
+      });
+      return svg;
+    };
+  }
+
+  /** @param {Array<{nombre:string, valor:number}>} partes
+   *  @param {(v:number) => string} formato */
+  function leyenda(partes, formato) {
+    const total = partes.reduce((a, p) => a + p.valor, 0) || 1;
+    const ul = el("ul", { class: "leyenda" });
+    partes.forEach((p, i) => {
+      const m = el("span", { class: "muestra" });
+      m.style.background = p.nombre === "Otros" ? "var(--otros)" : "var(" + CATEGORIAS[i] + ")";
+      ul.appendChild(el("li", undefined, m, p.nombre + " ",
+                        el("span", { class: "num" }, pct(p.valor, total)),
+                        " (" + formato(p.valor) + ")"));
+    });
+    return ul;
+  }
+
+  /**
+   * Línea de commits por mes, con área tenue y una guía vertical que
+   * busca el mes más cercano al puntero (nadie apunta a una línea de 2 px).
+   * @param {Array<[string, number]>} meses
+   */
+  function linea(meses) {
+    return (/** @type {number} */ ancho) => {
+      const alto = 170, pie = 26, izq = 44, arriba = 10, dcha = 12;
+      const max = tope(Math.max(...meses.map((m) => m[1]), 1));
+      const util = ancho - izq - dcha;
+      const paso = meses.length > 1 ? util / (meses.length - 1) : 0;
+      const X = (/** @type {number} */ i) => izq + (meses.length > 1 ? i * paso : util / 2);
+      const Y = (/** @type {number} */ v) => arriba + alto - (v / max) * alto;
+      const svg = s("svg", { width: ancho, height: alto + pie + arriba, role: "img" });
+      // La marca intermedia solo si es un número entero de commits.
+      for (const v of (Number.isInteger(max / 2) ? [0, max / 2, max] : [0, max])) {
+        svg.appendChild(s("line", { class: v ? "rejilla" : "eje", x1: izq, x2: ancho - dcha, y1: Y(v), y2: Y(v) }));
+        texto(svg, izq - 6, Y(v) + 4, compacto(v), "", "end");
+      }
+      const puntos = meses.map((m, i) => X(i) + "," + Y(m[1])).join(" ");
+      const area = s("polygon", { points: X(0) + "," + Y(0) + " " + puntos + " " +
+                                          X(meses.length - 1) + "," + Y(0),
+                                  style: relleno("--s1"), "fill-opacity": "0.10" });
+      svg.appendChild(area);
+      svg.appendChild(s("polyline", { points: puntos, fill: "none",
+                                      style: "stroke:var(--s1)",
+                                      "stroke-width": 2, "stroke-linejoin": "round",
+                                      "stroke-linecap": "round" }));
+      // Etiquetas del eje: como mucho una cada ~70 px, siempre la última.
+      const cada = Math.max(1, Math.ceil(70 / Math.max(paso, 1)));
+      meses.forEach((m, i) => {
+        if (i % cada === 0 || i === meses.length - 1) {
+          if (i !== meses.length - 1 && meses.length - 1 - i < cada) return;
+          texto(svg, X(i), arriba + alto + 18, m[0], "", "middle");
+        }
+      });
+      const ultimo = meses[meses.length - 1];
+      svg.appendChild(s("circle", { cx: X(meses.length - 1), cy: Y(ultimo[1]), r: 4,
+                                    style: "fill:var(--s1);stroke:var(--surface)",
+                                    "stroke-width": 2 }));
+      const guia = s("line", { class: "eje", y1: arriba, y2: arriba + alto, visibility: "hidden" });
+      const punto = s("circle", { r: 4, style: "fill:var(--s1);stroke:var(--surface)",
+                                  "stroke-width": 2, visibility: "hidden" });
+      svg.appendChild(guia);
+      svg.appendChild(punto);
+      const capa = s("rect", { x: izq, y: 0, width: util, height: alto + arriba,
+                               fill: "transparent", tabindex: 0,
+                               "aria-label": "Commits por mes; usa las flechas" });
+      let actual = meses.length - 1;
+      /** @param {number} i @param {number} cx @param {number} cy */
+      const enfocar = (i, cx, cy) => {
+        actual = Math.max(0, Math.min(meses.length - 1, i));
+        const m = meses[actual];
+        guia.setAttribute("x1", String(X(actual)));
+        guia.setAttribute("x2", String(X(actual)));
+        guia.setAttribute("visibility", "visible");
+        punto.setAttribute("cx", String(X(actual)));
+        punto.setAttribute("cy", String(Y(m[1])));
+        punto.setAttribute("visibility", "visible");
+        tip.textContent = "";
+        tip.appendChild(el("strong", undefined, num(m[1]) + " commits"));
+        tip.appendChild(el("span", undefined, m[0]));
+        tip.style.display = "block";
+        const r = tip.getBoundingClientRect();
+        tip.style.left = Math.max(8, Math.min(cx + 14, window.innerWidth - r.width - 8)) + "px";
+        tip.style.top = Math.max(8, cy - r.height - 12) + "px";
+      };
+      capa.addEventListener("pointermove", (ev) => {
+        const e = /** @type {PointerEvent} */ (ev);
+        const caja = svg.getBoundingClientRect();
+        const xr = e.clientX - caja.left - izq;
+        enfocar(paso ? Math.round(xr / paso) : 0, e.clientX, e.clientY);
+      });
+      const ocultar = () => {
+        guia.setAttribute("visibility", "hidden");
+        punto.setAttribute("visibility", "hidden");
+        ocultarTip();
+      };
+      capa.addEventListener("pointerleave", ocultar);
+      capa.addEventListener("blur", ocultar);
+      capa.addEventListener("keydown", (ev) => {
+        const e = /** @type {KeyboardEvent} */ (ev);
+        if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+        e.preventDefault();
+        const caja = svg.getBoundingClientRect();
+        const i = actual + (e.key === "ArrowRight" ? 1 : -1);
+        enfocar(i, caja.left + X(Math.max(0, Math.min(meses.length - 1, i))), caja.top + arriba);
+      });
+      svg.appendChild(capa);
+      return svg;
+    };
+  }
+
+  /**
+   * Mapa de calor día × hora con una rampa de un solo tono (más oscuro =
+   * más commits; en modo oscuro, más claro). El cero va en gris neutro
+   * para que «nada» no parezca «poco».
+   * @param {number[][]} m
+   */
+  function calor(m) {
+    const max = Math.max(...m.map((f) => Math.max(...f)), 1);
+    const paso = (/** @type {number} */ v) => v <= 0 ? "--q0" : "--q" + Math.min(7, 1 + Math.floor((v / max) * 6.999));
+    return (/** @type {number} */ ancho) => {
+      const izq = 34, arriba = 16, hueco = 2;
+      const celda = Math.max(8, Math.min(26, (ancho - izq) / 24 - hueco));
+      const svg = s("svg", { width: ancho, height: arriba + 7 * (celda + hueco) + 8, role: "img" });
+      for (let h = 0; h < 24; h += celda < 14 ? 6 : 3) {
+        texto(svg, izq + h * (celda + hueco) + celda / 2, 11, String(h), "", "middle");
+      }
+      m.forEach((fila, d) => {
+        texto(svg, izq - 6, arriba + d * (celda + hueco) + celda * 0.72, DIAS[d], "", "end");
+        fila.forEach((v, h) => {
+          const g = s("g", { class: "marca" });
+          g.appendChild(s("rect", { class: "relleno golpe", x: izq + h * (celda + hueco),
+                                    y: arriba + d * (celda + hueco), width: celda, height: celda,
+                                    rx: 2, style: relleno(paso(v)) }));
+          conTip(g, num(v) + " commits", DIAS[d] + " de " + h + ":00 a " + h + ":59");
+          svg.appendChild(g);
+        });
+      });
+      return svg;
+    };
+  }
+  /** Leyenda de la escala del mapa de calor. @param {number} max */
+  function escalaCalor(max) {
+    const ul = el("ul", { class: "leyenda" });
+    const li = el("li", undefined, "0");
+    for (let i = 0; i <= 7; i++) {
+      const m = el("span", { class: "muestra" });
+      m.style.background = "var(--q" + i + ")";
+      li.appendChild(m);
+    }
+    li.appendChild(document.createTextNode(num(max) + " commits"));
+    ul.appendChild(li);
+    return ul;
+  }
+
+  // ---- secciones ---------------------------------------------------------
+  /** @param {string} etiqueta @param {string} valor @param {string} [nota]
+   *  @param {boolean} [heroe] */
+  function kpi(etiqueta, valor, nota, heroe) {
+    return el("div", { class: heroe ? "kpi heroe" : "kpi" },
+              el("div", { class: "etiqueta" }, etiqueta),
+              el("div", { class: "valor" }, valor),
+              nota ? el("div", { class: "nota" }, nota) : null);
+  }
+
+  function cabecera() {
+    const boton = el("button", { class: "tema", type: "button" }, "Tema: automático");
+    const modos = ["auto", "light", "dark"];
+    const nombres = { auto: "automático", light: "claro", dark: "oscuro" };
+    let modo = "auto";
+    try { modo = localStorage.getItem("gps-tema") || "auto"; } catch (e) { /* sin almacenamiento */ }
+    const aplicar = () => {
+      if (modo === "auto") document.documentElement.removeAttribute("data-theme");
+      else document.documentElement.setAttribute("data-theme", modo);
+      boton.textContent = "Tema: " + /** @type {Object<string,string>} */ (nombres)[modo];
+    };
+    boton.addEventListener("click", () => {
+      modo = modos[(modos.indexOf(modo) + 1) % modos.length];
+      try { localStorage.setItem("gps-tema", modo); } catch (e) { /* sin almacenamiento */ }
+      aplicar();
+    });
+    if (modo !== "auto") setTimeout(aplicar, 0);
+    return el("header", { class: "cabecera" },
+              el("div", undefined,
+                 el("h1", undefined, D.name),
+                 el("p", { class: "sub" }, "Analizado el " + D.generated_at + " en " +
+                   D.seconds.toFixed(1).replace(".", ",") + " s · " + num(D.files) +
+                   " archivos · " + bytes(D.bytes))),
+              boton);
+  }
+
+  function resumen() {
+    const propio = D.own["código"] || { code: 0, comment: 0, blank: 0 };
+    const genTotal = Object.keys(D.generated).reduce((a, k) => {
+      const g = D.generated[k];
+      return a + g.code + g.comment + g.blank;
+    }, 0);
+    const fila = el("div", { class: "kpis" });
+    fila.appendChild(kpi("Líneas de código propio", num(propio.code),
+                         "sin contar comentarios ni líneas en blanco", true));
+    fila.appendChild(kpi("Comentarios", pct(propio.comment, propio.code + propio.comment),
+                         num(propio.comment) + " líneas de documentación"));
+    fila.appendChild(kpi("Archivos", num(D.files), D.ignored ? num(D.ignored) + " ignorados" : undefined));
+    fila.appendChild(kpi("Generado o de terceros", num(genTotal) + " líneas",
+                         num(D.generated_files) + " archivos que no cuentan como propios"));
+    if (D.git) {
+      fila.appendChild(kpi("Commits", num(D.git.commits),
+                           fecha(D.git.first) + " → " + fecha(D.git.last)));
+      fila.appendChild(kpi("Factor bus", String(D.git.bus_factor),
+                           "personas que suman más de la mitad de los commits"));
+    }
+    return fila;
+  }
+
+  function lenguajes() {
+    const cont = el("div");
+    cont.appendChild(el("h2", undefined, "De qué está hecho"));
+    const L = D.languages.filter((l) => l.code > 0);
+    if (!L.length) {
+      cont.appendChild(el("p", { class: "vacio" }, "No hay código propio que contar."));
+      return cont;
+    }
+    const partes = L.slice(0, MAX_SEGMENTOS).map((l) => ({ nombre: l.name, valor: l.code }));
+    const resto = L.slice(MAX_SEGMENTOS).reduce((a, l) => a + l.code, 0);
+    if (resto > 0) {
+      if (partes.length === MAX_SEGMENTOS) {
+        // Seis con nombre como máximo: un séptimo color ya no se distingue.
+        const ultimo = partes.pop();
+        partes.push({ nombre: "Otros", valor: resto + (ultimo ? ultimo.valor : 0) });
+      } else {
+        partes.push({ nombre: "Otros", valor: resto });
+      }
+    }
+    const filas = L.map((l) => [l.name, l.kind, num(l.files), num(l.code), num(l.comment),
+                                pct(l.comment, l.code + l.comment), num(l.blank), bytes(l.bytes)]);
+    const t = tabla([{ t: "Lenguaje" }, { t: "Tipo" }, { t: "Archivos", n: true },
+                     { t: "Código", n: true }, { t: "Comentario", n: true },
+                     { t: "% coment.", n: true }, { t: "En blanco", n: true },
+                     { t: "Tamaño", n: true }], filas);
+    const comp = tarjeta("Composición del proyecto",
+                         "Líneas por lenguaje, documentación y datos incluidos. " +
+                         "Lo generado o de terceros va aparte.", t);
+    responsivo(comp.cuerpo, composicion(partes, (v) => num(v) + " líneas"));
+    comp.tarjeta.appendChild(leyenda(partes, (v) => num(v) + " líneas"));
+    cont.appendChild(comp.tarjeta);
+    const top = L.slice(0, 12);
+    const barrasL = tarjeta("Líneas por lenguaje", null, null);
+    responsivo(barrasL.cuerpo, barras(top.map((l) => ({
+      etiqueta: l.name, valor: l.code, texto: compacto(l.code),
+      detalle: l.name + " · " + num(l.files) + " archivos · " +
+               pct(l.comment, l.code + l.comment) + " de comentarios" }))));
+    if (L.length > top.length) {
+      barrasL.tarjeta.appendChild(el("p", { class: "aviso" },
+        "Y " + (L.length - top.length) + " lenguajes más en la tabla de arriba."));
+    }
+    cont.appendChild(barrasL.tarjeta);
+    return cont;
+  }
+
+  function tamanos() {
+    const cont = el("div");
+    cont.appendChild(el("h2", undefined, "Tamaño"));
+    const dos = el("div", { class: "dos" });
+    const H = D.histogram;
+    const tH = tabla([{ t: "Tramo" }, { t: "Archivos", n: true }, { t: "Tamaño", n: true }],
+                     H.map((h) => [h.range, num(h.files), bytes(h.bytes)]));
+    const hist = tarjeta("Archivos por tamaño", null, tH);
+    responsivo(hist.cuerpo, barras(H.map((h) => ({
+      etiqueta: h.range, valor: h.files, texto: num(h.files),
+      detalle: h.range + " · " + num(h.files) + " archivos · " + bytes(h.bytes) }))));
+    dos.appendChild(hist.tarjeta);
+    const grandes = tarjeta("Los más grandes", null, null);
+    if (D.largest.length) {
+      grandes.cuerpo.appendChild(tabla([{ t: "Archivo" }, { t: "Tamaño", n: true }],
+        D.largest.map((f) => [f.path, bytes(f.bytes)]), [0]));
+    } else {
+      grandes.cuerpo.appendChild(el("p", { class: "vacio" }, "No hay archivos."));
+    }
+    dos.appendChild(grandes.tarjeta);
+    cont.appendChild(dos);
+    if (D.binary_groups.length) {
+      const tB = tabla([{ t: "Tipo" }, { t: "Archivos", n: true }, { t: "Tamaño", n: true }],
+                       D.binary_groups.map((b) => [b.group, num(b.files), bytes(b.bytes)]));
+      const bin = tarjeta("Binarios por tipo", "No se leen: solo se cuentan y se miden.", tB);
+      responsivo(bin.cuerpo, barras(D.binary_groups.map((b) => ({
+        etiqueta: b.group, valor: b.bytes, texto: bytes(b.bytes),
+        detalle: b.group + " · " + num(b.files) + " archivos" }))));
+      cont.appendChild(bin.tarjeta);
+    }
+    if (D.longest.length) {
+      const largos = tarjeta("Los archivos propios con más código", null, null);
+      largos.cuerpo.appendChild(tabla([{ t: "Archivo" }, { t: "Líneas de código", n: true }],
+        D.longest.map((f) => [f.path, num(f.code)]), [0]));
+      cont.appendChild(largos.tarjeta);
+    }
+    return cont;
+  }
+
+  function salud() {
+    const cont = el("div");
+    cont.appendChild(el("h2", undefined, "Duplicados y pendientes"));
+    const dos = el("div", { class: "dos" });
+    const dup = tarjeta("Archivos duplicados",
+      D.duplicate_groups_total
+        ? num(D.duplicate_groups_total) + " grupos de archivos idénticos · " +
+          bytes(D.wasted_bytes) + " repetidos"
+        : null, null);
+    if (D.duplicates.length) {
+      dup.cuerpo.appendChild(tabla([{ t: "Copias", n: true }, { t: "Tamaño", n: true },
+                                    { t: "Repetido", n: true }, { t: "Archivos" }],
+        D.duplicates.slice(0, 25).map((g) => [g.paths.length, bytes(g.size), bytes(g.wasted),
+                                              g.paths.join("\n")]), [3]));
+    } else {
+      dup.cuerpo.appendChild(el("p", { class: "vacio" }, "No hay archivos repetidos."));
+    }
+    dos.appendChild(dup.tarjeta);
+    const pend = tarjeta("Marcas pendientes", "TODO, FIXME, HACK, XXX y BUG en el código propio.", null);
+    const claves = Object.keys(D.markers).sort((a, b) => D.markers[b] - D.markers[a]);
+    if (claves.length) {
+      const chips = el("ul", { class: "chips" });
+      for (const k of claves) chips.appendChild(el("li", undefined, k + " ", el("b", undefined, num(D.markers[k]))));
+      pend.cuerpo.appendChild(chips);
+      pend.cuerpo.appendChild(tabla([{ t: "Tipo" }, { t: "Dónde" }, { t: "Texto" }],
+        D.marker_samples.slice(0, 40).map((m) => [m.kind, m.rel + ":" + m.line, m.text]), [1]));
+    } else {
+      pend.cuerpo.appendChild(el("p", { class: "vacio" }, "Ninguna marca pendiente."));
+    }
+    dos.appendChild(pend.tarjeta);
+    cont.appendChild(dos);
+    return cont;
+  }
+
+  function historial() {
+    const cont = el("div");
+    cont.appendChild(el("h2", undefined, "Historial"));
+    const G = D.git;
+    if (!G) {
+      cont.appendChild(el("p", { class: "vacio" }, "Esta carpeta no es un repositorio de git con commits."));
+      return cont;
+    }
+    const tM = tabla([{ t: "Mes" }, { t: "Commits", n: true }], G.months.map((m) => [m[0], num(m[1])]));
+    const ritmo = tarjeta("Commits por mes", null, tM);
+    if (G.months.length > 1) responsivo(ritmo.cuerpo, linea(G.months));
+    else ritmo.cuerpo.appendChild(el("p", { class: "vacio" },
+      num(G.commits) + " commits, todos en " + (G.months[0] ? G.months[0][0] : "el mismo mes") + "."));
+    cont.appendChild(ritmo.tarjeta);
+    const maxCalor = Math.max(...G.heatmap.map((f) => Math.max(...f)), 0);
+    const tC = tabla([{ t: "Día" }].concat(Array.from({ length: 24 }, (_, h) => ({ t: String(h), n: true }))),
+                     G.heatmap.map((f, d) => [DIAS[d]].concat(f.map((v) => num(v)))));
+    const act = tarjeta("Cuándo se trabaja",
+                        "Día de la semana y hora, en la zona horaria de cada autor.", tC);
+    responsivo(act.cuerpo, calor(G.heatmap));
+    act.tarjeta.appendChild(escalaCalor(maxCalor));
+    cont.appendChild(act.tarjeta);
+    const dos = el("div", { class: "dos" });
+    const aut = tarjeta("Personas", G.authors.length + " en total · " + num(G.added) +
+                        " líneas añadidas y " + num(G.deleted) + " borradas", null);
+    aut.cuerpo.appendChild(tabla([{ t: "Nombre" }, { t: "Commits", n: true },
+                                  { t: "Añadidas", n: true }, { t: "Borradas", n: true },
+                                  { t: "Desde" }, { t: "Hasta" }],
+      G.authors.slice(0, 30).map((a) => [a.name, num(a.commits), num(a.added), num(a.deleted),
+                                         fecha(a.first), fecha(a.last)])));
+    dos.appendChild(aut.tarjeta);
+    const ch = tarjeta("Lo que más se toca",
+      "Commits que cambiaron cada archivo, siguiendo los renombrados.", null);
+    if (G.churn.length) {
+      ch.cuerpo.appendChild(tabla([{ t: "Archivo" }, { t: "Commits", n: true },
+                                   { t: "Líneas cambiadas", n: true }],
+        G.churn.map((c) => [c.path + (c.exists ? "" : "  (ya no existe)"),
+                            num(c.commits), num(c.lines_changed)]), [0]));
+    }
+    dos.appendChild(ch.tarjeta);
+    cont.appendChild(dos);
+    if (G.truncated) cont.appendChild(el("p", { class: "aviso" }, "Historial recortado a los commits más recientes."));
+    if (G.shallow) cont.appendChild(el("p", { class: "aviso" }, "Copia ligera: el historial está incompleto."));
+    return cont;
+  }
+
+  raiz.textContent = "";
+  raiz.appendChild(cabecera());
+  raiz.appendChild(resumen());
+  raiz.appendChild(lenguajes());
+  raiz.appendChild(tamanos());
+  raiz.appendChild(salud());
+  raiz.appendChild(historial());
+  if (D.unreadable) {
+    raiz.appendChild(el("p", { class: "aviso" }, num(D.unreadable) +
+      " archivos no se pudieron contar (demasiado grandes o ilegibles)."));
+  }
+  raiz.appendChild(el("footer", { class: "pie" }, "Generado por GitPush Studio " + D.version +
+    " en tu equipo. Este archivo no se conecta a ningún sitio."));
+
+  dibujarTodo();
+})();
+</script>
+</body>
+</html>

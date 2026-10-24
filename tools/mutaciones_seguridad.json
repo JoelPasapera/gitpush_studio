@@ -1,0 +1,1076 @@
+[
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "        if actual != entrada[1]:\n            conservadas.append(rel)\n            continue\n",
+  "new": "",
+  "desc": "remove_verified: sin comparar contenido",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    guardado = tree_entries(git, folder, snapshot) if snapshot else {}\n",
+  "new": "    guardado = tree_entries(git, folder, snapshot or \"HEAD\")\n",
+  "desc": "remove_verified: sin copia usa HEAD",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "                entradas.append((en_indice[0], en_indice[1], rel))\n            continue\n",
+  "new": "                pass\n            continue\n",
+  "desc": "snapshot: sin submódulos",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    rutas = set(indice) | set(untracked(git, folder)) | set(extra)\n",
+  "new": "    rutas = set(indice) | set(untracked(git, folder))\n",
+  "desc": "snapshot: sin lo que está en riesgo",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "        if p.returncode != 0 or len(shas) != len(lote):\n",
+  "new": "        if False:\n",
+  "desc": "snapshot: sin reintento uno a uno",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    if head and arbol == git.sha(folder, \"HEAD^{tree}\"):\n        return head, n\n",
+  "new": "",
+  "desc": "snapshot: commit aunque sea igual a HEAD",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "                          [message, EXACT_TRAILER], identity=identity,\n                          sign=False)",
+  "new": "                          [message, EXACT_TRAILER], identity=identity,\n                          sign=None)",
+  "desc": "snapshot: firma si lo pide la config",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    while nombre in existentes:\n",
+  "new": "    if nombre in existentes:\n",
+  "desc": "nombre de respaldo: un solo intento",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    (\"rebase-merge\", \"un rebase a medias\"),\n",
+  "new": "",
+  "desc": "operación a medias: sin rebase-merge",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "                os.rmdir(ruta)             # solo si está vacía\n",
+  "new": "                __import__(\"shutil\").rmtree(ruta)\n",
+  "desc": "restore_snapshot: borra carpetas con contenido",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    borrados, conservados = remove_verified(git, folder, safety, sorted(sobra))\n",
+  "new": "    borrados, conservados = remove_verified(git, folder, \"\", sorted(sobra))\n",
+  "desc": "restore_snapshot: no quita lo que sobra",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "                if not stat.S_ISDIR(os.lstat(_abs(raiz, tramo)).st_mode):\n                    sobra.add(tramo)\n",
+  "new": "                pass\n",
+  "desc": "restore_snapshot: archivo donde hace falta carpeta",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "            plan.conflicts.append((c.path, \"lo cambiaste tú y en GitHub se \"\n                                           \"borró\"))\n",
+  "new": "            plan.remove.append(c.path)\n",
+  "desc": "combinar: borra lo que cambiaste",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "                plan.conflicts.append((c.path, \"lo borraste tú y en GitHub \"\n                                               \"cambió\"))\n",
+  "new": "                plan.write.append(c.path)\n",
+  "desc": "combinar: resucita lo que borraste",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "            if info is None or actual == c.old_sha:\n",
+  "new": "            if True:\n",
+  "desc": "combinar: borrado sin comprobar",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "            plan.conflicts.append((c.path, \"en tu carpeta es una carpeta y en \"\n                                           \"GitHub es un archivo\"))\n",
+  "new": "            plan.write.append(c.path)\n",
+  "desc": "combinar: carpeta pisada por archivo",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "                plan.conflicts.append((c.path, f\"«{tramo}» es un archivo en tu \"\n                                               \"carpeta y en GitHub una \"\n                                               \"carpeta\"))\n",
+  "new": "                pass\n",
+  "desc": "combinar: archivo donde hace falta carpeta",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "            plan.conflicts.append((c.path, \"en tu carpeta no es un archivo \"\n                                           \"normal\"))\n",
+  "new": "            plan.write.append(c.path)\n",
+  "desc": "combinar: pisa algo que no es archivo normal",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "    if git.sha(folder) != plan.head:\n",
+  "new": "    if False:\n",
+  "desc": "execute: sin comprobar HEAD",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "        if expected and f.sha != expected:\n",
+  "new": "        if False:\n",
+  "desc": "sync: sin exigir el sha comprobado",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "        require_quiet_repo(folder, git)\n        require_branch_checked_out(git, folder)\n        say(",
+  "new": "        require_branch_checked_out(git, folder)\n        say(",
+  "desc": "sync: sin comprobar operación a medias",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "    if locales or en_riesgo or adelantada:\n",
+  "new": "    if locales or adelantada:\n",
+  "desc": "espejo: sin copia de lo ignorado en riesgo",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "    if locales or plan.at_risk or adelantada:\n",
+  "new": "    if locales or adelantada:\n",
+  "desc": "combinar: sin copia de lo ignorado en riesgo",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "        _, conservados = remove_verified(git, folder, copia, sobran)\n",
+  "new": "        conservados = []\n        for _r in sobran:\n            os.unlink(os.path.join(folder, _r))\n",
+  "desc": "espejo: borra sin verificar",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/history.py",
+  "old": "            _, conservados = remove_verified(git, folder, backup, sobran)\n",
+  "new": "            conservados = []\n",
+  "desc": "restaurar versión: no quita lo que sobra",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/history.py",
+  "old": "            _, conservados = remove_verified(git, folder, backup, sobran)\n",
+  "new": "            conservados = []\n            for _r in sobran:\n                __import__(\"os\").unlink(__import__(\"os\").path.join(folder, _r))\n",
+  "desc": "restaurar versión: borra sin verificar",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    if repos and strict:\n",
+  "new": "    if False:\n",
+  "desc": "anidados: nunca rechazar",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_update",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "        elif modo != \"160000\":\n",
+  "new": "        else:\n",
+  "desc": "anidados: submódulo en destino también se expande",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "                    archivos.append(d)      # se guarda como enlace\n",
+  "new": "                    pass\n",
+  "desc": "anidados: enlace a carpeta no cuenta",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "            if \".git\" in dirs or \".git\" in archivos:\n",
+  "new": "            if \".git\" in dirs:\n",
+  "desc": "anidados: .git archivo no cuenta",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "                if r not in rastreados:\n                    riesgo.add(r)\n",
+  "new": "                riesgo.add(r)\n",
+  "desc": "anidados: rastreados dentro cuentan",
+  "tests": [
+   "-f",
+   "tests.test_backups",
+   "tests.test_update",
+   "tests.test_safety",
+   "tests.test_flow"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/history.py",
+  "old": "        en_riesgo = files_at_risk(git, folder, full, strict=False)\n",
+  "new": "        en_riesgo = files_at_risk(git, folder, full)\n",
+  "desc": "recuperar respaldo estricto",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "    plan.at_risk = files_at_risk(git, folder, plan.tree, strict=False)\n",
+  "new": "    plan.at_risk = files_at_risk(git, folder, plan.tree)\n",
+  "desc": "combinar estricto",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "        rep.mirror_blocked = str(e)\n",
+  "new": "        pass\n",
+  "desc": "inspect no informa del bloqueo espejo",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/git.py",
+  "old": "        except RepoInTheWay as e:\n            return \"skip\"",
+  "new": "        except KeyError as e:\n            return \"skip\"",
+  "desc": "update_clone: anidado como fallo",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "                and campos[0] != b\"160000\":\n",
+  "new": "                :\n",
+  "desc": "embebidos: también los ya publicados",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    return [r for r in nuevos if r not in registrados]\n",
+  "new": "    return nuevos\n",
+  "desc": "embebidos: submódulos registrados también",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "        copia = _backup(git, folder, identity, en_riesgo, say, respaldo)\n    guardia.verify()\n",
+  "new": "        copia = _backup(git, folder, identity, en_riesgo, say, respaldo)\n",
+  "desc": "guardia: espejo sin verificar",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "    guardia.watch(tracked_index(git, folder))\n    guardia.watch(tree_entries(git, folder, remoto))\n",
+  "new": "    guardia.watch(tree_entries(git, folder, remoto))\n",
+  "desc": "guardia: espejo no vigila lo rastreado",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "    guardia.watch(tree_entries(git, folder, remoto))\n",
+  "new": "",
+  "desc": "guardia: espejo no vigila el destino",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "    if guard is not None:\n        guard.verify()\n",
+  "new": "",
+  "desc": "guardia: combinar sin verificar",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/integrate.py",
+  "old": "        plan.seen[c.path] = stat_signature(info)\n",
+  "new": "",
+  "desc": "guardia: plan sin lo visto",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/history.py",
+  "old": "            say(f\"  Rama de respaldo: {backup}\", \"dim\")\n        guardia.verify()\n        say(f\"⏪ Restaurando",
+  "new": "            say(f\"  Rama de respaldo: {backup}\", \"dim\")\n        say(f\"⏪ Restaurando",
+  "desc": "guardia: restaurar versión sin verificar",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/history.py",
+  "old": "            say(f\"  Rama de respaldo: {backup}\", \"dim\")\n        guardia.verify()\n        say(f\"⏪ Recuperando",
+  "new": "            say(f\"  Rama de respaldo: {backup}\", \"dim\")\n        say(f\"⏪ Recuperando",
+  "desc": "guardia: recuperar respaldo sin verificar",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/git.py",
+  "old": "        if git.is_dirty(target) or git.sha(target) != antes:\n",
+  "new": "        if False:\n",
+  "desc": "guardia: update_clone sin volver a mirar",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "    return (info.st_mode, info.st_size, info.st_mtime_ns)\n",
+  "new": "    return (info.st_mode, info.st_size)\n",
+  "desc": "guardia: firma sin fecha",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/safekeeping.py",
+  "old": "            if ahora.get(rel) != self.status.get(rel) or \\\n                    _signature_of(self.folder, rel) != self.seen[rel]:\n",
+  "new": "            if _signature_of(self.folder, rel) != self.seen[rel]:\n",
+  "desc": "guardia: sin comparar git status",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "LITERAL = [\"--literal-pathspecs\"]\n",
+  "new": "LITERAL = []\n",
+  "desc": "rutas: interpretadas como patrones",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "        ctx.run(LITERAL + [\"rm\", \"-r\", \"--cached\", \"--ignore-unmatch\", \"--\",\n",
+  "new": "        ctx.run([\"rm\", \"-r\", \"--cached\", \"--ignore-unmatch\", \"--\",\n",
+  "desc": "untrack: rutas como patrones",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "        ctx.run(LITERAL + cmd + paths[i:i + size])\n",
+  "new": "        ctx.run(cmd + paths[i:i + size])\n",
+  "desc": "vista previa: rutas como patrones",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    fuera = nested_repos_to_skip(ctx.git, ctx.folder)\n",
+  "new": "    fuera = []\n",
+  "desc": "anidados sin registrar: no se excluyen antes",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    return [r for r in candidatos if r not in registrados]\n",
+  "new": "    return candidatos\n",
+  "desc": "anidados: también los submódulos declarados",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/sync.py",
+  "old": "    rep.local_changes = git.pending_changes(folder)\n",
+  "new": "    rep.local_changes = git.status_changes(folder)\n",
+  "desc": "sync: un repo anidado cuenta como cambio tuyo",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/release.py",
+  "old": "        if git.pending_changes(folder):\n",
+  "new": "        if git.is_dirty(folder):\n",
+  "desc": "versión: bloqueada por un repo anidado",
+  "tests": [
+   "-f",
+   "tests.test_flow"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/git.py",
+  "old": "                if not (rel.endswith(\"/\") and os.path.lexists(\n",
+  "new": "                if not (False and os.path.lexists(\n",
+  "desc": "pending_changes: cuenta repos anidados",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_backups",
+   "tests.test_flow"
+  ]
+ },
+ {
+  "file": "gitpush_studio/ui/dialogs/sync.py",
+  "old": "        if not self._actionable:\n",
+  "new": "        if False:\n",
+  "desc": "diálogo sync: aplica lo que no ofrece",
+  "tests": [
+   "-f",
+   "tests.test_ui_headless"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/snapshot.py",
+  "old": "                target.rmdir()                  # solo si sigue vacía\n",
+  "new": "                shutil.rmtree(target)\n",
+  "desc": "instantánea: vacía el destino ocupado",
+  "tests": [
+   "-f",
+   "tests.test_snapshot",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/snapshot.py",
+  "old": "        resultado = extract(tar_path, temporal, should_stop=should_stop)\n",
+  "new": "        resultado = extract(tar_path, target, should_stop=should_stop)\n        shutil.rmtree(temporal, ignore_errors=True)\n        temporal = None\n        return resultado\n",
+  "desc": "instantánea: extrae directamente en el destino",
+  "tests": [
+   "-f",
+   "tests.test_snapshot",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/snapshot.py",
+  "old": "                if target.exists() and not target.is_symlink():\n                    target.rmdir()              # solo si está vacía\n                _rename(anterior, target)\n",
+  "new": "                shutil.rmtree(target, ignore_errors=True)\n                _rename(anterior, target)\n",
+  "desc": "actualizar instantánea: borra lo nuevo del destino",
+  "tests": [
+   "-f",
+   "tests.test_snapshot",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/analytics.py",
+  "old": "        if stat.S_ISLNK(os.lstat(path).st_mode):\n            return None                   # sin O_NOFOLLOW (Windows), también\n        fd = os.open(path, _OPEN_FLAGS)\n",
+  "new": "        fd = os.open(path, os.O_RDONLY)\n",
+  "desc": "duplicados: sigue enlaces y abre tuberías",
+  "tests": [
+   "-f",
+   "tests.test_analytics"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/gitobj.py",
+  "old": "    fd = os.open(path, _FLAGS)\n    with os.fdopen(fd, \"rb\") as fh:\n",
+  "new": "    with open(path, \"rb\") as fh:\n",
+  "desc": "gitobj: abre siguiendo enlaces (carrera)",
+  "tests": [
+   "-f",
+   "tests.test_backups"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    apartados = _apartar_lo_expuesto(ctx) if ctx.job.addedit else None\n",
+  "new": "    apartados = None\n",
+  "desc": "publicar addedit: no aparta lo ignorado",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    \"\"\"¿Desaparece `path` de GitHub porque se excluyó a propósito?\"\"\"\n",
+  "new": "    \"\"\"¿Desaparece `path` de GitHub porque se excluyó a propósito?\"\"\"\n    return True\n",
+  "desc": "publicar addedit: anuncia cualquier borrado",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "        deleted = [p for p in deleted if _requested_removal(ctx, p)]\n",
+  "new": "        pass\n",
+  "desc": "publicar addedit: vista previa sin filtrar borrados",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "                return os.path.lexists(tramo)\n",
+  "new": "                return False\n",
+  "desc": "mantener borrado: no ve el archivo que estorba",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    destino = f\"refs/heads/{job.branch}\"\n",
+  "new": "    destino = job.branch\n",
+  "desc": "push: rama sin nombre completo",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    origen = f\"refs/heads/{job.branch}\"\n",
+  "new": "    origen = job.branch\n",
+  "desc": "fetch: rama sin nombre completo",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    ctx.untracked_by_request.update(p.rstrip(\"/\") for p in paths if p)\n",
+  "new": "",
+  "desc": "untrack: no se apunta",
+  "tests": [
+   "-f",
+   "tests.test_safety",
+   "tests.test_flow",
+   "tests.test_git_and_publish",
+   "tests.test_backups",
+   "tests.test_pack_safety"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/pack.py",
+  "old": "    if not os.path.lexists(p):     # un enlace roto SÍ existe: está ocupado\n",
+  "new": "    if not os.path.exists(p):\n",
+  "desc": "TXT: enlace roto se da por libre",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/pack.py",
+  "old": "        if not stat.S_ISREG(os.lstat(path).st_mode):\n",
+  "new": "        if not stat.S_ISREG(os.stat(path).st_mode):\n",
+  "desc": "TXT: enlace a un TXT nuestro se da por nuestro",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/pack.py",
+  "old": "    return cabeza.startswith(_TXT_STARTS)\n",
+  "new": "    return any(m in cabeza for m in TXT_MARKERS)\n",
+  "desc": "TXT: cita de la cabecera basta para pisar",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/reader.py",
+  "old": "    if stat.S_ISLNK(info.st_mode):\n",
+  "new": "    if False:\n",
+  "desc": "lector: enlace no se describe",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/reader.py",
+  "old": "        info = os.lstat(path)\n",
+  "new": "        info = os.stat(path)\n",
+  "desc": "lector: sigue enlaces",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/reader.py",
+  "old": "    if not stat.S_ISREG(info.st_mode):\n        return Special(\"no es un archivo normal\")\n    try:\n        fd = os.open(path, _FLAGS)\n",
+  "new": "    try:\n        fd = os.open(path, os.O_RDONLY)\n",
+  "desc": "lector: abre tuberías",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/reader.py",
+  "old": "    if len(datos) > limit:\n        return Cut(datos[:limit])\n",
+  "new": "    if len(datos) > limit:\n        return datos[:limit]\n",
+  "desc": "lector: no marca el corte",
+  "tests": [
+   "-f",
+   "tests.test_pack_safety",
+   "tests.test_pure",
+   "tests.test_scan",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "            if conf is None:\n                continue\n            if mejor is None",
+  "new": "            if conf is None:\n                break\n            if mejor is None",
+  "desc": "secretos: solo la primera coincidencia",
+  "tests": [
+   "-f",
+   "tests.test_scan",
+   "tests.test_fuzz",
+   "tests.test_pure"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "                if conf == ALTA:\n                    return mejor            # no hay nada mejor que buscar\n",
+  "new": "                return mejor\n",
+  "desc": "secretos: se queda con la primera aunque sea baja",
+  "tests": [
+   "-f",
+   "tests.test_scan",
+   "tests.test_fuzz",
+   "tests.test_pure"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/scan.py",
+  "old": "OVERLAP = 8 * 1024 ",
+  "new": "OVERLAP = 1 ",
+  "desc": "escaneo: sin solape entre trozos",
+  "tests": [
+   "-f",
+   "tests.test_scan",
+   "tests.test_fuzz",
+   "tests.test_pure"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ignore.py",
+  "old": "            if p.startswith(\"**/\") and \"/\" not in p[3:]:\n                anchored = False\n",
+  "new": "            if p.startswith(\"**/\") and \"/\" not in p[3:]:\n                pass\n",
+  "desc": "ignore: /**/x anclado",
+  "tests": [
+   "-f",
+   "tests.test_ignore_vs_git",
+   "tests.test_pure"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/config.py",
+  "old": "    if data.get(_NO_SAVE):\n",
+  "new": "    if False:\n",
+  "desc": "config: sobrescribe una config que no se pudo leer",
+  "tests": [
+   "-f",
+   "tests.test_pure",
+   "tests.test_ui_headless",
+   "tests.test_fuzz"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/net.py",
+  "old": "        if antes.scheme == \"https\" and despues.scheme != \"https\":\n",
+  "new": "        if False:\n",
+  "desc": "red: acepta https→http",
+  "tests": [
+   "-f",
+   "tests.test_net"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/net.py",
+  "old": "                if nombre.lower() in _SENSITIVE:\n                    del nueva.headers[nombre]\n",
+  "new": "                pass\n",
+  "desc": "red: reenvía el token a otro servidor",
+  "tests": [
+   "-f",
+   "tests.test_net"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/git.py",
+  "old": "    if (partes.hostname or \"\").lower() != \"github.com\":\n        return \"\"\n",
+  "new": "",
+  "desc": "token: a cualquier servidor https",
+  "tests": [
+   "-f",
+   "tests.test_auth",
+   "tests.test_git_and_publish",
+   "tests.test_net"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/git.py",
+  "old": "    if partes.scheme.lower() != \"https\" or partes.username is not None \\\n",
+  "new": "    if partes.username is not None \\\n",
+  "desc": "token: también por http",
+  "tests": [
+   "-f",
+   "tests.test_auth",
+   "tests.test_git_and_publish",
+   "tests.test_net"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/snapshot.py",
+  "old": "    if any(len(p) > 1 and p[1] == \":\" and p[0].isalpha() for p in partes):\n        return \"\"\n",
+  "new": "",
+  "desc": "tar: acepta C:algo",
+  "tests": [
+   "-f",
+   "tests.test_fuzz",
+   "tests.test_pure",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/snapshot.py",
+  "old": "    if any(p in UNSAFE_NAMES for p in partes):\n        return \"\"\n",
+  "new": "",
+  "desc": "tar: acepta ..",
+  "tests": [
+   "-f",
+   "tests.test_fuzz",
+   "tests.test_pure",
+   "tests.test_update"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "    r\"|^\\$[A-Z_][A-Z0-9_]*$\"             # $VAR (en mayúsculas)\n",
+  "new": "",
+  "desc": "ejemplos: $VAR no es plantilla",
+  "tests": [
+   "-f",
+   "tests.test_scan"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "    if palabras and any(w in PLACEHOLDER_MARKERS for w in palabras) and all(\n",
+  "new": "    if palabras and all(\n",
+  "desc": "ejemplos: basta con palabras genéricas",
+  "tests": [
+   "-f",
+   "tests.test_scan"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "    if any(w in low for w in PLACEHOLDER_STRONG):\n",
+  "new": "    if any(w in low for w in PLACEHOLDER_STRONG + tuple(PLACEHOLDER_MARKERS)):\n",
+  "desc": "ejemplos: palabras de relleno como subcadenas",
+  "tests": [
+   "-f",
+   "tests.test_scan"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "    if _TEMPLATE.search(v):\n",
+  "new": "    if any(c in v for c in \"<>{}$\"):\n",
+  "desc": "ejemplos: cualquier $ o llave es plantilla",
+  "tests": [
+   "-f",
+   "tests.test_scan"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/secret_rules.py",
+  "old": "    if _URL_VAR.match(v) or looks_like_placeholder(v):\n",
+  "new": "    if looks_like_placeholder(v):\n",
+  "desc": "URL: variable de shell como contraseña",
+  "tests": [
+   "-f",
+   "tests.test_scan"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/publish.py",
+  "old": "    excluir = ([f\":(exclude,literal){r}\" for r in fuera])\n",
+  "new": "    excluir = ([f\":(exclude){r}\" for r in fuera])\n",
+  "desc": "anidados: exclusión como patrón",
+  "tests": [
+   "-f",
+   "tests.test_safety"
+  ]
+ }
+]
