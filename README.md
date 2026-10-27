@@ -1,4 +1,4 @@
-# GitPush Studio 3.2.0 😱
+# GitPush Studio 3.2.0 🧐
 
 Publica, clona y empaqueta tus proyectos de GitHub sin tocar la terminal;
 varias carpetas a la vez a tu misma cuenta, cada una con su TXT; y ahora
