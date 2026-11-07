@@ -1,0 +1,50 @@
+# Construye «GitPush Studio.exe» (Windows, sin necesidad de Python) cada vez
+# que se publica una etiqueta «v…», y lo adjunta a la release de GitHub.
+# También se puede lanzar a mano desde la pestaña «Actions».
+name: Versión para Windows (.exe)
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Dependencias
+        run: python -m pip install --upgrade pip -r requirements.txt pyinstaller
+
+      # Las pruebas se ejecutan para ver su resultado en Windows, pero no
+      # impiden construir el .exe (algunas dependen de la configuración de
+      # git del equipo de GitHub, distinta de la de un PC normal).
+      - name: Pruebas
+        continue-on-error: true
+        run: python -m unittest discover -s tests -t .
+
+      - name: Construir el .exe
+        run: python tools/construir_exe.py
+
+      - name: Empaquetar
+        shell: pwsh
+        run: Compress-Archive -Path "dist/GitPush Studio" -DestinationPath "GitPush-Studio-windows.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GitPush-Studio-windows
+          path: GitPush-Studio-windows.zip
+
+      - name: Adjuntar a la release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GitPush-Studio-windows.zip
