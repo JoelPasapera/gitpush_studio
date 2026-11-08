@@ -276,8 +276,8 @@ lista se recorta al final quedándose con lo más grave, nunca antes de mirar el
 
 - **Formatos de proveedor** (`alta`): llaves privadas (PEM, OpenSSH, PGP, PuTTY), GitHub
   (`ghp_ gho_ ghu_ ghs_ ghr_ github_pat_`), GitLab, AWS (id y clave secreta), Google (API y
-  OAuth), Slack (tokens y webhooks), Stripe, OpenAI/Anthropic (`sk-…`), SendGrid, npm, PyPI,
-  Hugging Face, Telegram, Discord, Azure Storage y contraseñas en cadenas de conexión
+  OAuth), Slack (tokens y webhooks), Stripe, OpenAI y otros servicios de IA (`sk-…`), SendGrid,
+  npm, PyPI, Hugging Face, Telegram, Discord, Azure Storage y contraseñas en cadenas de conexión
   (`postgres://u:clave@…`). Un relleno evidente (`ghp_xxxx…`, `AKIAIOSFODNN7EXAMPLE`, `…`)
   baja a `baja`.
 - **Asignaciones** (`API_KEY = "…"`, `DB_PASSWORD=…` en `.env`/`.properties`/`.tfvars`/YAML,
@@ -438,8 +438,8 @@ ya lo dice, y una ráfaga de miles de ellos no se acumula en memoria.
 ## Lo que no se publica, sin .gitignore
 
 Antes, cada línea del cuadro «Archivos y carpetas a ignorar» se añadía al `.gitignore` del
-proyecto, y el `.gitignore` se publica: en GitHub se leía  
-`Ejemplo.md`, `notas/`… justo los nombres de lo que no querías enseñar. Ahora:
+proyecto, y el `.gitignore` se publica: en GitHub se leía `ArchivoEjemplo1.md`,
+`ArchivoEjemplo2.md`, `notas/`… justo los nombres de lo que no querías enseñar. Ahora:
 
 - **Van a la lista privada de git** (`.git/info/exclude`, módulo `exclude.py`). Git la aplica
   igual que un `.gitignore` —al añadir, en el estado, en lo que lista para la revisión y el
