@@ -4,8 +4,9 @@
     dump_repository("ana/app", "app-historial-github.txt", token=…)
 
 Junta las piezas: entiende qué repositorio se pide («dueño/nombre» o
-cualquier URL de GitHub), abre la sesión con la API (`ghsession`),
-descarga lo que falte al almacén (`ghfetch`, `ghstore`) y escribe el TXT
+cualquier URL de GitHub), abre las conexiones con la API (`ghpool`,
+`ghsession`), descarga lo que falte al almacén (`ghfetch`, por REST y
+por GraphQL, `ghgraphql`; `ghstore`) y escribe el TXT
 de una vez (`ghrender`) en un temporal que sustituye al destino solo al
 terminar (`atomic`). Nunca pisa un archivo que no sea un historial
 generado por la app: si en el destino hay otra cosa, usa otro nombre.
@@ -29,9 +30,10 @@ from . import ghsession
 from .atomic import atomic_open
 from .errors import StepError
 from .ghfetch import COUNTED, FetchOptions, ProgressCallback, fetch_all
+from .ghpool import DEFAULT_WORKERS, MAX_WORKERS, make_pool
 from .ghrender import TITLE_PREFIX, RenderOptions, render
-from .ghsession import ApiSession, WaitCallback, describe_error
-from .ghstore import FORMAT, open_store
+from .ghsession import WaitCallback, describe_error
+from .ghstore import FORMAT, RESUMABLE, open_store, peek
 
 _OWNER = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
 _REPO = re.compile(r"[A-Za-z0-9._-]{1,100}")
@@ -45,11 +47,18 @@ WriteCallback = Callable[[int, int], None]
 
 @dataclass(frozen=True)
 class DumpOptions:
-    """Qué entra en el volcado y cómo se escribe."""
+    """Qué entra en el volcado y cómo se escribe.
+
+    `workers` y `graphql` solo cambian CÓMO se descarga (más deprisa), no
+    lo que sale: no forman parte de la identidad del almacén y una
+    descarga a medias se puede seguir con otros valores.
+    """
     commits: bool = True       # los commits de cada pull request
     mentions: bool = False     # menciones desde otros issues y PR
     redact: bool = False       # tachar secretos
     utc: bool = False          # horas en UTC (si no, las de este equipo)
+    workers: int = DEFAULT_WORKERS   # conexiones a la vez, como mucho
+    graphql: bool = True       # lotes por GraphQL (solo con token)
 
 
 @dataclass
@@ -66,6 +75,8 @@ class DumpResult:
     seconds: float = 0.0
     bytes: int = 0
     redacted: int = 0
+    # Lo que no fue como debía (p. ej. GraphQL no se pudo usar), o vacío.
+    notice: str = ""
 
 
 # ------------------------------------------------------------------ #
@@ -101,6 +112,61 @@ def parse_repository(text: str) -> Tuple[str, str]:
 
 def default_name(repo: str) -> str:
     return f"{repo}{NAME_SUFFIX}"
+
+
+# ------------------------------------------------------------------ #
+#  ¿Hay una descarga a medias?                                        #
+# ------------------------------------------------------------------ #
+@dataclass(frozen=True)
+class PartialDownload:
+    """Una descarga a medias de un repositorio, y con qué opciones se
+    hizo. Solo se sigue con las MISMAS (los commits y las menciones
+    cambian lo que se guarda): con otras, empieza de cero."""
+    repository: str
+    commits: bool
+    mentions: bool
+    items: int                 # issues y PR ya guardados
+    # Es de una versión anterior que guardaba mal algo (ver
+    # `ghstore.UPGRADES`): eso se vuelve a pedir, lo demás se aprovecha.
+    upgrade: bool = False
+
+    def matches(self, options: DumpOptions) -> bool:
+        return (self.commits == options.commits
+                and self.mentions == options.mentions)
+
+    def describe(self) -> str:
+        """«con los commits y las menciones», «sin los commits»…"""
+        partes = [("con" if self.commits else "sin") + " los commits",
+                  ("con" if self.mentions else "sin") + " las menciones"]
+        return " y ".join(partes)
+
+    def upgrade_note(self) -> str:
+        """Si es de una versión anterior, qué se vuelve a pedir (y por
+        qué); si no, vacío."""
+        if not self.upgrade:
+            return ""
+        return ("Es de una versión anterior, que podía perder algún commit "
+                "o mención al guardarlos: esos se vuelven a pedir (con "
+                "token, en pocas consultas); lo demás se aprovecha.")
+
+
+def partial_download(spec: str, store_dir: Optional[Path] = None
+                     ) -> Optional[PartialDownload]:
+    """La descarga a medias de ese repositorio, si la hay (sin conectarse
+    a nada y sin tocar el almacén: solo lo lee)."""
+    try:
+        owner, repo = parse_repository(spec)
+    except StepError:
+        return None
+    previo = peek(owner, repo, base=store_dir)
+    # Uno de un formato anterior que se pone al día también se sigue.
+    if previo is None or previo.identity.get("format") not in RESUMABLE:
+        return None
+    return PartialDownload(repository=f"{owner}/{repo}",
+                           commits=bool(previo.identity.get("commits")),
+                           mentions=bool(previo.identity.get("mentions")),
+                           items=previo.items,
+                           upgrade=previo.identity.get("format") != FORMAT)
 
 
 # ------------------------------------------------------------------ #
@@ -175,8 +241,11 @@ def dump_repository(spec: str, output: str, token: str = "",
     # Antes de descargar nada: si no hay dónde escribir, mejor saberlo ya.
     destino, renamed = free_output_path(Path(output))
     root = api_root or ghsession.API_ROOT
-    with ApiSession(token=token, root=root, cancel=cancel, on_wait=on_wait,
-                    proxy=proxy, sleep=sleep) as session:
+    workers = max(1, min(int(options.workers or 1), MAX_WORKERS))
+    pool = make_pool(token, root, cancel, on_wait=on_wait, proxy=proxy,
+                     sleep=sleep, workers=workers)
+    try:
+        session = pool.session()
         ruta = "/repos/" + urllib.parse.quote(owner, safe="") + "/" \
             + urllib.parse.quote(repo, safe="")
         response = session.get(ruta)
@@ -187,14 +256,21 @@ def dump_repository(spec: str, output: str, token: str = "",
         # El nombre de verdad (mayúsculas, o el nuevo si se renombró).
         nombre = str(info.get("full_name") or f"{owner}/{repo}")
         owner, _sep, repo = nombre.partition("/")
+        # Solo lo que cambia lo que SALE: con otras conexiones o sin
+        # GraphQL, una descarga a medias se sigue igual.
         identity = {"format": FORMAT, "repo_id": info.get("id"),
                     "commits": options.commits,
                     "mentions": options.mentions}
         store = open_store(owner, repo, identity, base=store_dir)
         try:
-            fetch_all(session, owner, repo, store,
-                      FetchOptions(commits=options.commits,
-                                   mentions=options.mentions), on_progress)
+            aviso = fetch_all(pool, owner, repo, store,
+                              FetchOptions(commits=options.commits,
+                                           mentions=options.mentions,
+                                           workers=workers,
+                                           # GraphQL exige token.
+                                           graphql=options.graphql
+                                           and bool(token)),
+                              on_progress)
             zona = timezone.utc if options.utc else tz
             # Otra vez justo antes de escribir: la descarga puede haber
             # durado horas y el usuario, haber creado ese archivo.
@@ -205,7 +281,7 @@ def dump_repository(spec: str, output: str, token: str = "",
                                    commits=options.commits,
                                    mentions=options.mentions,
                                    redact=options.redact),
-                               now=now, check_cancel=session.check_cancel,
+                               now=now, check_cancel=pool.check_cancel,
                                on_item=on_write)
             counts = {kind: store.count(kind) for kind, _label in COUNTED}
             resumed = store.resumed
@@ -213,9 +289,12 @@ def dump_repository(spec: str, output: str, token: str = "",
             store.close()            # lo descargado se queda para seguir
             raise
         store.remove()
-        requests = session.requests
+        requests = pool.requests     # antes de cerrar (cierra las sesiones)
+    finally:
+        pool.close()
     return DumpResult(path=str(destino), renamed=renamed, repository=nombre,
                       items=stats.items, issues=stats.issues,
                       pulls=stats.pulls, counts=counts, requests=requests,
                       resumed=resumed, seconds=time.time() - t0,
-                      bytes=stats.bytes, redacted=stats.redacted)
+                      bytes=stats.bytes, redacted=stats.redacted,
+                      notice=aviso)

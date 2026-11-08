@@ -1,4 +1,4 @@
-# GitPush Studio 3.4.0
+# GitPush Studio 3.6.1
 
 Publica, clona y empaqueta tus proyectos de GitHub sin tocar la terminal;
 varias carpetas a la vez a tu misma cuenta, cada una con su TXT; y
@@ -8,7 +8,17 @@ informe HTML que no se conecta a nada.
 La 3.4 vuelca en un TXT **todo lo que se habló en un repositorio de GitHub**:
 cada issue y cada pull request, abiertos y cerrados, con quién escribió qué y
 cuándo, las revisiones, los comentarios en el código en hilo, los commits y
-los eventos, en orden (ver «Qué cambia en 3.4»).
+los eventos, en orden (ver «Qué cambia en 3.4»). La 3.5 lo hizo **decenas de
+veces más rápido** en los repositorios grandes —varias páginas a la vez y las
+revisiones, commits y menciones por lotes de GraphQL— con el mismo TXT, byte
+a byte, y sin poder saltarse nada aunque GitHub reciba novedades a mitad. La
+3.6 lo vuelve a hacer **2,5 veces más rápido**: todas las partes a la vez por
+las mismas conexiones, tantas conexiones como aguante GitHub (se adapta
+sola), lotes de GraphQL más grandes y 11 veces más pequeños de enviar, y
+menos escrituras en el disco (ver «Qué cambia en 3.6»). La 3.6.1 corrige lo
+que en los repositorios de verdad seguía yendo **uno a uno** (con ghidra,
+más consultas de las 5.000 que da GitHub por hora) y dos casos en los que
+un commit o una mención **faltaban** en el TXT (ver «Qué cambia en 3.6.1»).
 
 La 3.3 cerró el círculo con las IA: el TXT del proyecto se le pasa a una IA
 (con los secretos tachados, sin lo que no aporta, solo lo que cambió y
@@ -95,9 +105,17 @@ gitpush_studio/
 │   ├── publish.py       PublishJob · Callbacks · STEPS (13) · publish · publish_many
 │   ├── remotes.py       ¿la carpeta ya publica en OTRO repositorio? (nunca se cambia solo)
 │   ├── ghsession.py     la API de GitHub para descargas largas: una conexión, gzip con tope,
-│   │                    «Link», esperas por la cuota, proxy, el token solo a la API
-│   ├── ghstore.py       lo descargado, en SQLite página a página (para seguir donde se quedó)
-│   ├── ghfetch.py       qué se descarga: listados de todo el repositorio + lo de cada PR
+│   │                    «Link», esperas por la cuota (compartidas), proxy, el token solo a la API
+│   ├── ghlimits.py      los límites de GitHub compartidos: cuota, «ve más despacio» y cuántas
+│   │                    consultas a la vez (AIMD con techo, como el control de congestión de TCP)
+│   ├── ghpool.py        varias conexiones a la vez (hilos con su sesión; «Detener» llega a todos)
+│   ├── ghsched.py       el planificador: muchas fuentes de consultas, las mismas conexiones
+│   ├── ghgraphql.py     revisiones, commits y menciones por lotes de GraphQL: un alias por
+│   │                    issue/PR, fragmentos, tamaño de lote que se ajusta solo (lo que no cabe, REST)
+│   ├── ghrecords.py     lo justo de cada cosa, igual venga por REST o por GraphQL
+│   ├── ghstore.py       lo descargado, en SQLite (confirmado por tandas; para seguir donde se quedó)
+│   ├── ghfetch.py       qué se descarga y cómo: los listados y lo de cada PR como fuentes del
+│   │                    planificador, a la vez y sin saltarse nada
 │   ├── ghrender.py      el TXT del historial: índice, conversaciones, hilos, sin ambigüedad
 │   ├── ghdump.py        el volcado entero: repositorio → almacén → TXT, sin pisar nada
 │   ├── sync.py          traer cambios de GitHub: inspect (qué pasaría en cada modo) · apply
@@ -132,7 +150,7 @@ tools/
 ├── crear_icono.py       dibuja el icono (PNG e ICO escritos a mano)
 └── construir_exe.py     «GitPush Studio.exe» con PyInstaller (sin Python instalado)
 .github/workflows/windows-exe.yml   el .exe se construye solo al publicar una etiqueta «v…»
-tests/                   925 pruebas; las de seguridad comparan FOTOS completas de
+tests/                   932 pruebas; las de seguridad comparan FOTOS completas de
                          carpeta y remoto antes/después (nada cambia fuera de lo aprobado)
 ├── test_apply_txt.py    aplicar un TXT: nunca fuera, nunca a través de enlaces, línea a
 │                        línea byte a byte, copia previa, nada si algo cambió entre medias
@@ -152,6 +170,8 @@ tests/                   925 pruebas; las de seguridad comparan FOTOS completas 
 ├── test_remotes.py      nunca se publica en el repositorio equivocado (ni con --yes, ni solo)
 ├── test_ghdump.py       el historial a TXT contra un GitHub falso (fakegithub.py): el token
 │                        nunca sale de la API, cuota, bomba gzip, reanudar = mismo TXT
+├── test_ui_layout.py    las ventanas caben en la pantalla (también con el escalado de
+│                        Windows) y los botones nunca quedan dentro de lo que se desplaza
 └── …                    flujo, analíticas, licencias, interfaz sin pantalla, etc.
 ```
 
@@ -178,6 +198,7 @@ python -m gitpush_studio.cli pack ./mi-app --for-ai --redact --changes archivos 
 python -m gitpush_studio.cli apply-txt ./mi-app respuesta-de-la-ia.txt --diff   # pregunta antes
 python -m gitpush_studio.cli scan-history ./mi-app             # secretos en todo el historial
 python -m gitpush_studio.cli issues-txt yo/mi-app -o historial.txt --redact   # issues y PR
+python -m gitpush_studio.cli issues-txt yo/mi-app --workers 8 --no-graphql      # a tu manera
 python -m gitpush_studio.cli why ./mi-app notas/borrador.md    # ¿por qué no se sube?
 python -m gitpush_studio.cli analyze ./mi-app --html informe.html --json datos.json
 python -m gitpush_studio.cli pull ./mi-app --url https://github.com/yo/mi-app.git --mode merge
@@ -417,8 +438,8 @@ ya lo dice, y una ráfaga de miles de ellos no se acumula en memoria.
 ## Lo que no se publica, sin .gitignore
 
 Antes, cada línea del cuadro «Archivos y carpetas a ignorar» se añadía al `.gitignore` del
-proyecto, y el `.gitignore` se publica: en GitHub se leía `PROJECT_CONTEXT.md`,
-`ARCHITECTURE.md`, `notas/`… justo los nombres de lo que no querías enseñar. Ahora:
+proyecto, y el `.gitignore` se publica: en GitHub se leía  
+`Ejemplo.md`, `notas/`… justo los nombres de lo que no querías enseñar. Ahora:
 
 - **Van a la lista privada de git** (`.git/info/exclude`, módulo `exclude.py`). Git la aplica
   igual que un `.gitignore` —al añadir, en el estado, en lo que lista para la revisión y el
@@ -445,7 +466,177 @@ proyecto, y el `.gitignore` se publica: en GitHub se leía `PROJECT_CONTEXT.md`,
   que hubiera en ese archivo fuera de su bloque y, en un worktree, es la compartida que git
   consulta de verdad.
 
+## Qué cambia en 3.6.1
+
+### Las historias de cada issue, por GraphQL de verdad
+
+Con token, la 3.6.0 pedía por GraphQL las menciones de cada issue (quién lo citó desde otro
+issue o pull request) y comprobaba si la lista había venido entera comparando con `totalCount`.
+Pero en la historia de un issue GitHub cuenta en `totalCount` **todo** lo que pasó en él
+(comentarios, etiquetas, cierres…), aunque se pidan solo las menciones. Casi ninguna lista
+«cabía», y casi todas se volvían a pedir **una a una por REST**: con ghidra, unas 8.600
+consultas, más de las 5.000 por hora que da GitHub, y una hora de espera a mitad. Las pruebas
+no lo vieron porque el GitHub falso contaba como esperaba el código.
+
+- Que una lista vino entera lo dice ahora `pageInfo.hasNextPage`, la señal de paginación de
+  siempre, que sí respeta el filtro. Sin esa señal, nada se da por entero (se pide por REST:
+  mejor de más que perder algo).
+- El GitHub falso de las pruebas cuenta ahora como GitHub (la historia entera en `totalCount`,
+  solo los campos pedidos). Con él, el código de la 3.6.0 falla la prueba que lo exige.
+- GraphQL solo se abandona si falla con **todo** en 3 lotes seguidos (antes, también contaban
+  los lotes en los que nada cabía, que es normal), y fallos sueltos no lo hacen dejar.
+- Si GraphQL no se puede usar (el token no lo permite, GitHub no lo acepta…), **se dice**, con
+  el porqué, en la ventana, una vez en la consola y en `issues-txt`: todo va a ir más lento.
+- Si la cuota de REST se agota pero GraphQL sigue (tiene su propia cuota), la ventana sigue
+  diciendo hasta cuándo espera REST mientras lo demás avanza.
+
+### Un commit en dos pull requests, o una mención a dos issues: en los dos
+
+Las pruebas nuevas encontraron dos casos (desde la 3.4) en los que algo **faltaba** en el TXT:
+el almacén no guarda dos entradas con el mismo identificador, y
+
+- un commit se identificaba solo por su sha: si estaba en dos pull requests (uno cerrado y
+  reabierto como otro, ramas apiladas…), salía solo en uno;
+- una mención se identificaba por desde dónde y cuándo: un comentario que cita a dos issues a
+  la vez («Arregla #23 y #31») creaba dos con el mismo identificador, y uno la perdía.
+
+Ahora los dos llevan delante el número de su pull request o issue (y si a algo le faltara el
+identificador de GitHub, uno sacado de su contenido: dos nunca se pisan). El almacén pasa al
+formato 2: **una descarga a medias de la 3.6.0 se sigue** (la ventana lo dice) tirando solo lo
+que ese formato podía haber guardado mal —los commits y las menciones, que se vuelven a pedir
+por GraphQL en pocas consultas— y aprovechando todo lo demás.
+
+**Si estabas descargando con la 3.6.0**: pulsa «Detener», abre la 3.6.1 y vuelve a pulsar; sigue
+desde donde iba, con las mismas opciones ya marcadas.
+
+**Medido** contra el GitHub falso con historias como las de GitHub, con un repositorio de la
+forma de ghidra a escala 1/4 (2.141 issues y PR, 556 pull requests, con menciones, 50 ms por
+consulta):
+
+| | 3.6.0 | 3.6.1 |
+|---|---|---|
+| Consultas | 2.359 (2.159 uno a uno) | **218** (23 de GraphQL, 18 uno a uno) |
+| Tiempo | 34 s | **6 s** |
+
+y el TXT, idéntico. A escala real, unas 9.400 consultas frente a unas 870.
+
+## Qué cambia en 3.6
+
+### El historial de issues y PR, otra vez 2,5 veces más rápido (y con menos recursos)
+
+La 3.5 ya iba por varias conexiones, pero por partes: primero un listado, luego otro, luego lo
+de cada pull request; en cada cambio de parte quedaban conexiones paradas, y siempre eran 4.
+Ahora:
+
+- **Todo a la vez, por las mismas conexiones**: cada parte (los cinco listados, los lotes de
+  GraphQL, lo que va uno a uno) es una *fuente* de consultas, y un planificador mantiene las
+  conexiones llenas con las de todas, por prioridad. Lo de cada pull request empieza en cuanto
+  se sabe qué pull requests hay, mientras siguen los comentarios y los eventos. GraphQL se
+  queda con la mitad de las conexiones mientras haya listados esperando, y con todas si no
+  (por ejemplo, al retomar una descarga con los listados ya hechos).
+- **Tantas conexiones como aguante GitHub**: GitHub no dice cuántas consultas a la vez acepta.
+  Se descubre como lo hace TCP con la red: se empieza con 4 y se sube poco a poco (hasta 8,
+  `--workers`) mientras responda bien; si pide ir más despacio, se baja a la mitad, se espera lo
+  que diga **en todas las conexiones**, y ya no se vuelve a subir hasta el número que lo provocó
+  (cada aviso de GitHub cuesta una espera de un minuto). Cada consulta ocupa un puesto mientras
+  va y viene, así que la bajada se nota al momento, también en las que solo reintentaban; y se
+  reacciona una sola vez por tanda, no una por cada consulta de la misma ráfaga.
+- **Lotes de GraphQL más grandes y mucho más pequeños**: cada issue o pull request va con TODO
+  lo que le falta en un mismo alias (revisiones, commits y menciones juntas, no en lotes
+  distintos), y los campos se escriben una vez, en fragmentos que cada alias solo nombra: lo
+  que se envía a GitHub baja de 7,3 MB a 650 KB en un repositorio como ghidra. Cuántos van en
+  cada consulta se ajusta solo, midiendo lo que tarda GitHub, para que cada una tarde unos
+  pocos segundos (GitHub corta las que pasan de 10).
+- **Menos escrituras en el disco**: lo descargado se confirma por tandas (como mucho cada medio
+  segundo y siempre al parar), no página a página; en Windows cada confirmación espera al
+  disco. Lo confirmado nunca queda a medias: si una página falla al guardarse, no entra ni ella
+  ni su cursor.
+
+**Medido** contra un GitHub falso con latencias por tipo de consulta parecidas a las de GitHub,
+con un repositorio de la forma de ghidra (8.567 issues y PR, 2.222 pull requests) y menciones:
+
+| | 3.5 | 3.6 |
+|---|---|---|
+| Descarga entera | 136 s, 998 consultas (261 GraphQL) | **55 s**, 818 consultas (89 GraphQL) |
+| Retomar una descarga de la 3.4 a medias | 82 s, 307 consultas | **38 s**, 134 consultas |
+| Enviado a GitHub | 7,3 MB | **0,65 MB** |
+| CPU del programa | 4,9 s | **4,3 s** |
+
+y el TXT (11,5 MB) sale idéntico byte a byte en todos los casos.
+
+## Qué cambia en 3.5
+
+### El historial de issues y PR, decenas de veces más rápido
+
+En un repositorio grande la 3.4 tardaba horas: con ghidra (unos 8.600 issues y pull requests,
+2.250 de ellos pull requests) pedía a GitHub **una consulta por cada pull request** para sus
+revisiones, otra para sus commits y otra por cada issue para sus menciones —unas 13.700
+consultas, una detrás de otra, más que las 5.000 por hora que da GitHub—. Ahora:
+
+- **Por GraphQL, de 25 en 25**: con tu token, las revisiones y los commits de 25 pull requests
+  van en UNA consulta (las menciones, de 50 issues en 50). Para esos 2.250 pull requests son
+  unas 100 consultas en vez de 4.500, y de otra cuota (la de GraphQL), así que la de siempre
+  no se agota. Lo que no cabe en una consulta (un pull request con más de 100 revisiones o
+  commits) se pide entero por REST; un lote que GitHub no puede servir se parte en dos y se
+  reintenta; y si GraphQL no se puede usar (sin token, o tu token no lo permite), todo va como
+  antes, sin que se note más que en el tiempo.
+- **Varias páginas a la vez**: en cuanto GitHub dice cuántas páginas tiene un listado (issues,
+  comentarios, eventos…), el resto se pide por **4 conexiones a la vez** (`--workers N`, de 1
+  a 8). Las que no lo dicen siguen de una en una.
+- **Sin poder saltarse nada**: GitHub numera las páginas desde el principio del listado, así
+  que si mientras tanto llega algo nuevo DELANTE, todo corre un puesto y, pidiendo páginas
+  desordenadas, una podría quedarse sin leer. Por eso los listados por fecha ascendente
+  (issues, comentarios) reciben lo nuevo al final y, al acabar, se vuelve a pedir la última
+  página y lo que venga detrás; los eventos (que GitHub da del más reciente al más antiguo)
+  van por tandas y tras cada una se comprueba que lo más reciente no cambió: si cambió, la
+  tanda se vuelve a pedir en orden; y si el repositorio está muy activo en ese momento, se
+  sigue de una en una. Al retomar, se vuelve a pedir la página anterior a la que faltaba.
+  Todo esto está probado con novedades que llegan a mitad y páginas que llegan desordenadas.
+- **El mismo TXT, byte a byte**: las pruebas comparan la descarga de siempre (REST, de una en
+  una) con la nueva (GraphQL y en paralelo), también con lo que no cabe, con lotes que fallan,
+  con GraphQL denegado y con bots (GraphQL los llama «dependabot» y REST «dependabot[bot]»; el
+  TXT dice lo de siempre). Las cuentas borradas, que REST da como «ghost» y GraphQL a veces
+  como nadie, salen siempre como «@ghost (cuenta eliminada)».
+- **Educado con GitHub**: las conexiones de una descarga comparten lo que saben de los
+  límites: si GitHub pide ir más despacio a una, o se acaba la cuota, esperan todas (no siguen
+  lanzando consultas que GitHub rechazaría). «Detener» las para todas: cada una en cuanto
+  termina la consulta que tenga en curso, y las esperas, al instante.
+- **Tu descarga a medias sigue**: lo descargado con la 3.4 se aprovecha. Pulsa «Detener» (lo
+  descargado se guarda), abre la 3.5 y vuelve a pulsar «Descargar»: sigue desde donde iba y
+  pide por GraphQL solo lo que faltaba.
+- **Avisa de lo que hay a medias**: una descarga solo se sigue con las mismas opciones con las
+  que empezó (los commits y las menciones cambian lo que se guarda; con otras, empieza de
+  cero). Por eso, al escribir el repositorio, la ventana dice si hay una descarga a medias
+  —cuántos issues y PR tiene ya— y deja marcadas sus opciones; `issues-txt` lo avisa igual y
+  dice qué opciones repetir. Para saberlo solo se LEE el almacén (en modo de solo lectura).
+
+**Medido** contra un GitHub falso servido en local, con un repositorio de la forma de ghidra
+(8.567 issues y PR, 2.222 pull requests, 25.591 comentarios, 25.644 eventos) y menciones: la
+3.4 hizo **13.697 consultas** y la 3.5, **998** (261 de ellas por GraphQL), y los dos TXT
+(11,5 MB) salen idénticos byte a byte. Con lo que tarda GitHub de verdad en responder (en una
+descarga de ghidra, unos 2 segundos por consulta) eso es pasar de unas 8 horas a unos 10–20
+minutos; una descarga de la 3.4 a medias, con los listados ya hechos, termina en minutos.
+
+```
+python -m gitpush_studio.cli issues-txt nationalsecurityagency/ghidra --mentions --utc
+python -m gitpush_studio.cli issues-txt ana/app --workers 1 --no-graphql   # como en la 3.4
+```
+
+### Herramientas con desplazamiento
+
+La lista «Herramientas» de la barra lateral tiene su propia barra de desplazamiento y reparte
+el alto con la de perfiles: con más herramientas, o en una pantalla baja, ninguna queda
+cortada abajo.
+
 ## Qué cambia en 3.4
+
+### 3.4.1: las ventanas caben en pantallas pequeñas
+
+En un portátil de 1366×768 (o con el escalado de Windows al 125 % o más) «Issues y PR a TXT»,
+«Consolidar a TXT», «Aplicar TXT» y «Revisar historial» no cabían: sus botones quedaban cortados
+abajo y no había forma de llegar a ellos. Ahora cada ventana se ajusta a la pantalla (también con
+el escalado), los botones, la barra de progreso y el estado van siempre abajo y a la vista, y lo
+que no cabe se desplaza con la rueda del ratón o la barra lateral.
 
 ### 🗂 Issues y pull requests a TXT (`issues-txt`)
 
@@ -657,10 +848,34 @@ en la copia lo ignorado que se va a pisar, aplicar lo que GitHub tiene aunque ha
 desde «Comprobar», seguir un enlace al escribir el TXT, pasar a git un nombre como patrón,
 mandar el token a otro servidor… Cada mutación que «sobrevive» es una prueba que falta.
 
-Resultado con esta versión: **208 de 208 mutaciones detectadas** (`tools/mutaciones_seguridad.json`:
+Resultado con esta versión: **264 de 264 mutaciones detectadas** (`tools/mutaciones_seguridad.json`:
 copias de seguridad, borrado verificado, traer cambios, restaurar, publicar, vista previa, el
 TXT, el lector, la revisión de secretos, la red, las descargas y qué proyectos del lote
-están marcados para publicarse). Las 16 nuevas de la 3.4 defienden el volcado de issues y pull
+están marcados para publicarse). Las 26 nuevas de la 3.6.1 defienden que un commit en dos
+pull requests y una mención a dos issues salgan en los dos, que dos entradas sin
+identificador no se pisen, que una descarga a medias de la 3.6.0 se ponga al día tirando
+solo lo que podía estar mal (ni más, ni menos) y se ofrezca para seguir, que una identidad
+estropeada no rompa la apertura del almacén ni se tome por otra, que una lista de
+GraphQL solo se dé por entera si GitHub lo dice, que no todo se vuelva a pedir uno a uno,
+que una lista que no cabe no haga dejar GraphQL y que fallar con todo sí (tras 3 lotes
+seguidos, no sueltos), y que el aviso de por qué se dejó GraphQL llegue al progreso, a la
+ventana, a la consola y a `issues-txt` (una vez, no en cada progreso), igual que la espera
+de GitHub mientras dura. Las 13 nuevas de la 3.6 defienden el planificador y los
+límites: que al retomar se vuelva a pedir la página anterior, que una tanda de eventos no
+adelante el cursor de más, que lo que GraphQL no pudo traer vaya por REST (también el último
+lote si GraphQL deja de servir), que cerrar o «Detener» confirme lo pendiente y que una
+página o un lote que falla al guardarse no quede a medias, que el número de conexiones a la
+vez limite de verdad, baje una sola vez por ráfaga y no vuelva a subir hasta donde GitHub
+protestó, que una respuesta desmesurada devuelva su puesto, que GraphQL no ocupe todas las
+conexiones mientras otros esperan y que un error pare las demás consultas. Las 17 de la 3.5
+defienden la descarga rápida: que
+los eventos en paralelo comprueben que nada corrió de sitio, que la cola recoja lo creado
+durante la descarga, que al retomar se vuelva a pedir la página anterior y el cursor no
+salte páginas que aún no llegaron, que lo que GraphQL no trajo (no cabía, o falló) no se dé
+por hecho, que los bots se llamen como en REST, que un «última página» de otro servidor no se
+use, que las conexiones compartan los límites y esperen todas, que el error de una no se
+ignore, que sin token no se intente GraphQL y que mirar si hay una descarga a medias ni la
+vacíe ni deje de marcar sus opciones. Las 16 de la 3.4 defienden el volcado de issues y pull
 requests: que el token nunca siga una redirección ni un enlace a otro servidor, que una respuesta
 desmesurada o una bomba gzip no llenen la memoria (el tope se aplica mientras se descomprime),
 que se espere a la cuota, que una conexión a medio leer no se reutilice, que reanudar vuelva a

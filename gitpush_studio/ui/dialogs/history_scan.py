@@ -31,7 +31,7 @@ MAX_ROWS = 200
 class HistoryScanDialog(WorkerDialog):
     TITLE = "Revisar el historial"
     SIZE = (820, 700)
-    MIN_SIZE = (660, 520)
+    MIN_SIZE = (660, 420)
 
     def __init__(self, app):
         super().__init__(app)
@@ -59,17 +59,22 @@ class HistoryScanDialog(WorkerDialog):
                lambda: browse_folder_into(self.e_folder, "Repositorio"),
                width=110).grid(row=0, column=1)
 
+        # El pie (estado y botones) se coloca ANTES que la lista y abajo
+        # del todo: en una pantalla pequeña lo que se encoge es la lista
+        # (que se desplaza), nunca los botones.
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", pady=(0, 16), **pad)
         self.pbar = progress_bar(self)
         self.pbar.pack(fill="x", pady=(12, 0), **pad)
         self.results = scrollable(self, height=280)
         self.results.pack(fill="both", expand=True, pady=(10, 0), **pad)
-        self.lbl_status = ctk.CTkLabel(self, text="", font=f.small,
+        self.lbl_status = ctk.CTkLabel(footer, text="", font=f.small,
                                        text_color=MUTED, justify="left",
                                        wraplength=760)
-        self.lbl_status.pack(anchor="w", pady=(8, 0), **pad)
+        self.lbl_status.pack(anchor="w", pady=(8, 0))
 
-        rowb = ctk.CTkFrame(self, fg_color="transparent")
-        rowb.pack(fill="x", pady=(10, 16), **pad)
+        rowb = ctk.CTkFrame(footer, fg_color="transparent")
+        rowb.pack(fill="x", pady=(10, 0))
         rowb.grid_columnconfigure(0, weight=1)
         self.btn_go = button(rowb, f, "🔍  Revisar historial", self._start,
                              kind="primary", height=42)

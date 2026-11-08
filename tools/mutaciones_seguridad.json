@@ -2203,8 +2203,8 @@
  },
  {
   "file": "gitpush_studio/core/ghsession.py",
-  "old": "                if headers.get(\"x-ratelimit-remaining\") == \"0\":\n",
-  "new": "                if False:\n",
+  "old": "            agotada = headers.get(\"x-ratelimit-remaining\") == \"0\" \\\n",
+  "new": "            agotada = False and headers.get(\"x-ratelimit-remaining\") == \"0\" \\\n",
   "desc": "historial: no espera a que GitHub reinicie la cuota",
   "tests": [
    "-f",
@@ -2223,8 +2223,8 @@
  },
  {
   "file": "gitpush_studio/core/ghfetch.py",
-  "old": "            store.save(listing.name, cursor=page.url, **rows)\n",
-  "new": "            store.save(listing.name, cursor=page.next_url, **rows)\n",
+  "old": "        self.store.save(self.listing.name, cursor=page.url, **rows)\n",
+  "new": "        self.store.save(self.listing.name, cursor=page.next_url, **rows)\n",
   "desc": "historial: al retomar no vuelve a pedir la página en curso",
   "tests": [
    "-f",
@@ -2233,8 +2233,8 @@
  },
  {
   "file": "gitpush_studio/core/ghfetch.py",
-  "old": "    cursor, done = store.stage(listing.name)\n    if done:\n",
-  "new": "    cursor, done = \"\", store.stage(listing.name)[1]\n    if done:\n",
+  "old": "        cursor, done = store.stage(listing.name)\n        if done:\n",
+  "new": "        cursor, done = \"\", False\n        if done:\n",
   "desc": "historial: al retomar empieza los listados desde el principio",
   "tests": [
    "-f",
@@ -2330,6 +2330,598 @@
   "tests": [
    "-f",
    "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        if head == self._head:\n",
+  "new": "        if True:\n",
+  "desc": "historial: eventos en paralelo sin comprobar que nada corrió de sitio",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        self._save(result, advance_to=siguiente)\n        if not self._queue and not self.running:\n            self._start_tail()\n",
+  "new": "        self._save(result, advance_to=siguiente)\n        if not self._queue and not self.running:\n            self._finish()\n",
+  "desc": "historial: sin la cola, lo creado durante la descarga se pierde",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        inicio = max(1, first - 1) if overlap else first\n",
+  "new": "        inicio = first\n",
+  "desc": "historial: al retomar en paralelo no vuelve a pedir la página anterior",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        while siguiente in self._arrived:\n            siguiente += 1\n",
+  "new": "        siguiente = number + 1\n",
+  "desc": "historial: el cursor salta páginas que aún no llegaron",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "                if parte in resultado.fallback:\n",
+  "new": "                if False:\n",
+  "desc": "historial: lo que GraphQL no trajo se marca como hecho",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        trabajos[COMMITS.name] = _pending(store, COMMITS, pulls)\n",
+  "new": "        trabajos[COMMITS.name] = list(pulls)\n",
+  "desc": "historial: al retomar se vuelve a pedir lo ya hecho",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "    if not complete(conexion):\n",
+  "new": "    if False:\n",
+  "desc": "historial: lo que no cabe en una consulta GraphQL se da por completo",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "            return BatchOutcome({unico.number: ItemResult(\n                fallback=set(unico.parts), failed=True)}, split=True,\n                error=str(error))\n",
+  "new": "            return BatchOutcome({unico.number: ItemResult()}, split=True)\n",
+  "desc": "historial: un PR que GraphQL no puede traer se da por vacío",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "    if tipo == \"Bot\" and not login.endswith(\"[bot]\"):\n        login += \"[bot]\"\n",
+  "new": "    pass\n",
+  "desc": "historial: los bots por GraphQL sin «[bot]» (TXT distinto del de REST)",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "    bot = _BOT_EMAIL.fullmatch(correo.strip())\n",
+  "new": "    bot = None\n",
+  "desc": "historial: el autor bot de un commit se pierde por GraphQL",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghsession.py",
+  "old": "        last_target = self.same_origin_target(last) if last else \"\"\n",
+  "new": "        last_target = urllib.parse.urlsplit(last).path if last else \"\"\n",
+  "desc": "historial: un «última página» de otro servidor se usa",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghsession.py",
+  "old": "            self._respect_hold()\n",
+  "new": "",
+  "desc": "historial: las demás conexiones no esperan cuando GitHub pide ir despacio",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghpool.py",
+  "old": "                          limits=limits)\n",
+  "new": ")\n",
+  "desc": "historial: las conexiones de una descarga no comparten los límites",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghpool.py",
+  "old": "                    resultado = futuro.result()\n",
+  "new": "                    try:\n                        resultado = futuro.result()\n                    except Exception:\n                        continue\n",
+  "desc": "historial: el error de una conexión se ignora (faltarían datos)",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghdump.py",
+  "old": "                                           graphql=options.graphql\n                                           and bool(token)),\n",
+  "new": "                                           graphql=options.graphql),\n",
+  "desc": "historial: GraphQL sin token",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghdump.py",
+  "old": "    previo = peek(owner, repo, base=store_dir)\n",
+  "new": "    previo = open_store(owner, repo, {\"format\": FORMAT}, base=store_dir) and peek(owner, repo, base=store_dir)\n",
+  "desc": "historial: mirar si hay una descarga a medias la vacía",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/ui/dialogs/issues_txt.py",
+  "old": "        self.v_mentions.set(self.partial.mentions)\n",
+  "new": "",
+  "desc": "historial (interfaz): no marca las opciones de la descarga a medias (empezaría de cero)",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        inicio = max(1, first - 1) if overlap else first\n        self._last_url = last_url\n",
+  "new": "        inicio = first\n        self._last_url = last_url\n",
+  "desc": "historial: al retomar en paralelo no vuelve a pedir la página anterior (planificador)",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "            self._commit(self._batch[-1] + 1)\n",
+  "new": "            self._commit(self._batch[-1] + 1 + self.window)\n",
+  "desc": "historial: una tanda de eventos completa adelanta el cursor de más",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        self.tracker.add({\"entries\": entradas})\n        self.rest.add(a_rest)\n",
+  "new": "        self.tracker.add({\"entries\": entradas})\n",
+  "desc": "historial: lo que GraphQL no pudo traer no se pide por REST",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        quedan = list(lote) + list(self._queue or ())\n",
+  "new": "        quedan = list(self._queue or ())\n",
+  "desc": "historial: si GraphQL deja de servir, su último lote se pierde",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "        try:\n            self.flush()\n        except sqlite3.Error:\n            pass\n        try:\n            self._db.close()\n",
+  "new": "        try:\n            self._db.close()\n",
+  "desc": "almacén: cerrar (o «Detener») no confirma lo pendiente",
+  "tests": [
+   "-f",
+   "tests.test_ghsched",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "                [(name, cursor, 1 if done else 0)\n                 for name, cursor, done in stages])\n        except BaseException:\n            self._db.rollback()\n            raise\n",
+  "new": "                [(name, cursor, 1 if done else 0)\n                 for name, cursor, done in stages])\n        except BaseException:\n            raise\n",
+  "desc": "almacén: un lote de GraphQL que falla al guardarse queda a medias",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "                \"(?, ?, ?)\", (stage, cursor, 1 if done else 0))\n        except BaseException:\n            self._db.rollback()        # ni la página ni su cursor\n            raise\n",
+  "new": "                \"(?, ?, ?)\", (stage, cursor, 1 if done else 0))\n        except BaseException:\n            raise\n",
+  "desc": "almacén: una página que falla al guardarse queda a medias",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghlimits.py",
+  "old": "            if epoch != self._epoch:\n                return                 # de antes de la última bajada\n",
+  "new": "",
+  "desc": "conexiones a la vez: una ráfaga de avisos baja el número varias veces",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghlimits.py",
+  "old": "            while self._in_flight >= max(1, int(self._limit)):\n",
+  "new": "            while False:\n",
+  "desc": "conexiones a la vez: el número no limita de verdad",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghlimits.py",
+  "old": "            self._ceiling = max(1.0, float(int(self._limit)) - 1.0)\n",
+  "new": "",
+  "desc": "conexiones a la vez: tras un aviso vuelve a subir hasta provocarlo otra vez",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghsession.py",
+  "old": "            except _TooBig:\n                self.limits.release(epoch, None)\n",
+  "new": "            except _TooBig:\n",
+  "desc": "historial: una respuesta desmesurada no devuelve su puesto (todo se atasca)",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghsched.py",
+  "old": "        task = self._pick(cap_graphql=de_graphql >= tope_graphql)\n",
+  "new": "        task = self._pick(cap_graphql=False)\n",
+  "desc": "planificador: GraphQL ocupa todas las conexiones",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghsched.py",
+  "old": "        except BaseException:\n            self._pool.abort()\n",
+  "new": "        except BaseException:\n",
+  "desc": "planificador: un error no para las demás consultas",
+  "tests": [
+   "-f",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghrecords.py",
+  "old": "    return (\"commit\", f\"{number}:{sha}\", number, when, data)\n",
+  "new": "    return (\"commit\", sha, number, when, data)\n",
+  "desc": "historial: un commit en dos pull requests solo sale en uno",
+  "tests": [
+   "-f",
+   "tests.test_ghdump",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghrecords.py",
+  "old": "    ident = (f\"{number}<{data['source_repo']}#{data['source_number']}\"\n",
+  "new": "    ident = (f\"<{data['source_repo']}#{data['source_number']}\"\n",
+  "desc": "historial: un comentario que menciona a dos issues solo sale en uno",
+  "tests": [
+   "-f",
+   "tests.test_ghdump",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "            for tipo in tipos:\n                self._db.execute(\"DELETE FROM entries WHERE kind = ?\", (tipo,))\n",
+  "new": "            for tipo in tipos:\n                pass\n",
+  "desc": "historial: al poner al día un almacén viejo quedan los commits mal guardados",
+  "tests": [
+   "-f",
+   "tests.test_ghdump",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "            for prefijo in prefijos:\n                self._db.execute(\"DELETE FROM stages WHERE name LIKE ? \"\n",
+  "new": "            for prefijo in []:\n                self._db.execute(\"DELETE FROM stages WHERE name LIKE ? \"\n",
+  "desc": "historial: al poner al día un almacén viejo no se vuelve a pedir lo que estaba mal",
+  "tests": [
+   "-f",
+   "tests.test_ghdump",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "        if row is not None and self._upgrade(row[0], identity):\n",
+  "new": "        if False:\n",
+  "desc": "historial: una descarga a medias del formato anterior se tira entera",
+  "tests": [
+   "-f",
+   "tests.test_ghdump",
+   "tests.test_ghsched"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghdump.py",
+  "old": "    if previo is None or previo.identity.get(\"format\") not in RESUMABLE:\n",
+  "new": "    if previo is None or previo.identity.get(\"format\") != FORMAT:\n",
+  "desc": "historial: una descarga a medias del formato anterior no se ofrece para seguir",
+  "tests": [
+   "-f",
+   "tests.test_ghdump",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "    return isinstance(pagina, dict) and pagina.get(\"hasNextPage\") is False\n",
+  "new": "    return isinstance(pagina, dict) and pagina.get(\"hasNextPage\") is False and False\n",
+  "desc": "historial: todo lo de GraphQL se vuelve a pedir uno a uno por REST (el fallo de 3.6.0)",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "    return isinstance(pagina, dict) and pagina.get(\"hasNextPage\") is False\n",
+  "new": "    return not isinstance(pagina, dict) or not pagina.get(\"hasNextPage\")\n",
+  "desc": "historial: sin señal de GitHub una lista se da por entera (se perdería lo que no vino)",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "    return bool(resultados) and all(r is None or r.failed\n",
+  "new": "    return bool(resultados) and all(r is None or r.failed or r.fallback\n",
+  "desc": "GraphQL: lotes con listas que no caben hacen abandonar GraphQL",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        if self._failed_batches >= MAX_FAILED_BATCHES \\\n                and not self._unavailable:\n",
+  "new": "        if False:\n",
+  "desc": "GraphQL: si falla con todo, se sigue partiendo lotes para siempre",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        if not self._unavailable:\n            self.notice = graphql_notice(reason)\n",
+  "new": "        if not self._unavailable:\n            pass\n",
+  "desc": "GraphQL: si no se puede usar, no se avisa (todo va lento sin saber por qué)",
+  "tests": [
+   "-f",
+   "tests.test_ghfast",
+   "tests.test_ghsched",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "                fallback=set(unico.parts), failed=True)}, split=True,\n",
+  "new": "                fallback=set(unico.parts))}, split=True,\n",
+  "desc": "GraphQL: un elemento que falla no cuenta como fallo",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghrecords.py",
+  "old": "    return f\"sin-id:{number}:{huella.hexdigest()[:20]}\"\n",
+  "new": "    return \"sin-id\"\n",
+  "desc": "historial: dos entradas sin id de GitHub se pisan",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        else:\n            self._failed_batches = 0\n",
+  "new": "        else:\n            pass\n",
+  "desc": "GraphQL: fallos sueltos (no seguidos) hacen abandonarlo para el resto",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        if self._failed_batches >= MAX_FAILED_BATCHES \\\n",
+  "new": "        if self._failed_batches > MAX_FAILED_BATCHES \\\n",
+  "desc": "GraphQL: un lote fallido de más antes de dejarlo",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        ultimo = self._last_error.strip().rstrip(\".\")\n",
+  "new": "        ultimo = \"\"\n",
+  "desc": "GraphQL: el aviso no dice qué contestó GitHub",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghgraphql.py",
+  "old": "                            error=segunda.error or primera.error)\n",
+  "new": "                            error=\"\")\n",
+  "desc": "GraphQL: al partir un lote se pierde lo que contestó GitHub",
+  "tests": [
+   "-f",
+   "tests.test_ghfast"
+  ]
+ },
+ {
+  "file": "gitpush_studio/ui/dialogs/issues_txt.py",
+  "old": "        if notice and notice != self._logged_notice:\n",
+  "new": "        if notice:\n",
+  "desc": "ventana: el aviso de GraphQL llena la consola (una vez por progreso)",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/ui/dialogs/issues_txt.py",
+  "old": "            self._wait = (why, until)\n",
+  "new": "            pass\n",
+  "desc": "ventana: la espera de GitHub desaparece en cuanto otra parte avanza",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/ui/dialogs/issues_txt.py",
+  "old": "        if time.time() >= until:\n",
+  "new": "        if False:\n",
+  "desc": "ventana: una espera ya pasada se sigue anunciando",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/ui/dialogs/issues_txt.py",
+  "old": "        aviso = f\"\\n⚠ {r.notice}\" if r.notice else \"\"\n",
+  "new": "        aviso = \"\"\n",
+  "desc": "ventana: al terminar no se dice que GraphQL no se pudo usar",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/cli.py",
+  "old": "        if p.notice and p.notice != estado[\"notice\"]:\n",
+  "new": "        if p.notice:\n",
+  "desc": "consola: el aviso de GraphQL se repite con cada progreso",
+  "tests": [
+   "-f",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/cli.py",
+  "old": "    if r.notice:\n        print(f\"  ⚠ {r.notice}\")\n",
+  "new": "    if False:\n        print(f\"  ⚠ {r.notice}\")\n",
+  "desc": "consola: el resumen final no dice que GraphQL no se pudo usar",
+  "tests": [
+   "-f",
+   "tests.test_ghdump"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghdump.py",
+  "old": "                           upgrade=previo.identity.get(\"format\") != FORMAT)\n",
+  "new": "                           upgrade=False)\n",
+  "desc": "ventana: una descarga a medias de la versión anterior no dice qué se vuelve a pedir",
+  "tests": [
+   "-f",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghfetch.py",
+  "old": "        self.on_progress(Progress(stage, made, estimate, dict(self.counts),\n                                  activas, self.notice()))\n",
+  "new": "        self.on_progress(Progress(stage, made, estimate, dict(self.counts),\n                                  activas))\n",
+  "desc": "progreso: no dice que GraphQL no se pudo usar mientras sigue",
+  "tests": [
+   "-f",
+   "tests.test_ghsched",
+   "tests.test_ui_issues_txt"
+  ]
+ },
+ {
+  "file": "gitpush_studio/core/ghstore.py",
+  "old": "        if not isinstance(formato, int) or isinstance(formato, bool):\n",
+  "new": "        if False:\n",
+  "desc": "almacén: una identidad estropeada rompe la apertura (o se toma por el formato 1)",
+  "tests": [
+   "-f",
+   "tests.test_ghsched",
+   "tests.test_ghdump"
   ]
  }
 ]

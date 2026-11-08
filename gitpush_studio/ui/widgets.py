@@ -68,9 +68,13 @@ def entry(parent, fonts, placeholder="", show=None):
 
 
 def hint(parent, fonts, text, wraplength=640, pady=(2, 12)):
-    return ctk.CTkLabel(parent, text=text, font=fonts.small, text_color=MUTED,
-                        justify="left", wraplength=wraplength
-                        ).pack(anchor="w", padx=16, pady=pady)
+    """Una nota en gris bajo un grupo de opciones. Devuelve la etiqueta
+    (para poder colocar otra delante con `pack(before=…)`)."""
+    etiqueta = ctk.CTkLabel(parent, text=text, font=fonts.small,
+                            text_color=MUTED, justify="left",
+                            wraplength=wraplength)
+    etiqueta.pack(anchor="w", padx=16, pady=pady)
+    return etiqueta
 
 
 def checkbox(parent, fonts, text, variable, danger=False, command=None):
@@ -135,22 +139,71 @@ def default_downloads(config_data):
                                                 else Path.home())
 
 
+# Lo que se deja libre en vertical: la barra de tareas, la barra de
+# título de la propia ventana y un poco de aire (en píxeles reales).
+SCREEN_MARGIN_V = 120
+SCREEN_MARGIN_H = 40
+
+
+def window_scaling(win):
+    """El factor con el que customtkinter agranda las ventanas: el
+    «escalado» de Windows (1.25 al 125 %, 1.5 al 150 %…). 1.0 si no se
+    puede saber."""
+    try:
+        valor = float(ctk.ScalingTracker.get_window_scaling(win))
+    except Exception:
+        return 1.0
+    return valor if valor > 0 else 1.0
+
+
+def fit_to_screen(width, height, min_width, min_height, screen_w, screen_h,
+                  scaling=1.0):
+    """(ancho, alto, ancho mínimo, alto mínimo) para que una ventana quepa
+    en la pantalla.
+
+    El tamaño va en las unidades de customtkinter, que luego lo multiplica
+    por el escalado de Windows; la pantalla se mide en píxeles reales.
+    Por eso se divide: una ventana de 680 de alto en un portátil de 768
+    píxeles al 125 % mediría 850 y sus botones quedarían fuera. El mínimo
+    tampoco puede ser más alto que la pantalla (si no, el sistema no la
+    deja encoger)."""
+    if screen_w < 200 or screen_h < 200:          # no se sabe: lo habitual
+        screen_w, screen_h = 1280, 720
+    escala = scaling if scaling > 0 else 1.0
+    cabe_ancho = max(240, int((screen_w - SCREEN_MARGIN_H) / escala))
+    cabe_alto = max(240, int((screen_h - SCREEN_MARGIN_V) / escala))
+    ancho = min(width, cabe_ancho)
+    alto = min(height, cabe_alto)
+    return ancho, alto, min(min_width, ancho), min(min_height, alto)
+
+
 def place_dialog(win, parent, w, base_h, min_w=520, min_h=420):
-    """Centra una ventana sobre su padre y ACOTA su alto a la pantalla,
-    para que sus botones inferiores nunca queden fuera de vista."""
+    """Centra una ventana sobre su padre y la ACOTA a la pantalla (también
+    con el escalado de Windows), para que sus botones inferiores nunca
+    queden fuera de vista. Lo que no quepa, que se desplace dentro: ver
+    `BaseDialog.scrolling_layout`."""
     try:
         win.resizable(True, True)
     except Exception:
         pass
+    escala = window_scaling(win)
     try:
-        screen_h = win.winfo_screenheight()
+        screen_w = int(win.winfo_screenwidth())
+        screen_h = int(win.winfo_screenheight())
     except Exception:
-        screen_h = 720
-    h = min(base_h, max(min_h, screen_h - 120))
+        screen_w, screen_h = 0, 0
+    w, h, min_w, min_h = fit_to_screen(w, base_h, min_w, min_h, screen_w,
+                                       screen_h, escala)
     try:
-        x = parent.winfo_x() + (parent.winfo_width() - w) // 2
-        y = parent.winfo_y() + (parent.winfo_height() - h) // 2
-        win.geometry(f"{w}x{h}+{max(x, 20)}+{max(y, 20)}")
+        # La posición va en píxeles reales; el tamaño, sin escalar.
+        ancho_real = int(w * escala)
+        alto_real = int(h * escala)
+        x = parent.winfo_x() + (parent.winfo_width() - ancho_real) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - alto_real) // 2
+        if screen_w >= 200 and screen_h >= 200:
+            x = min(x, screen_w - ancho_real - 10)
+            y = min(y, screen_h - alto_real - SCREEN_MARGIN_V + 20)
+        win.geometry(f"{w}x{h}+{max(x, 10)}+{max(y, 10)}")
     except Exception:
         win.geometry(f"{w}x{h}")
     try:

@@ -12,6 +12,10 @@ Contra un GitHub falso (`tests.fakegithub`), se exige:
   · la descarga: todo lo que hay, y nada de lo que no es conversación;
     reanudar tras detenerse sin perder ni repetir nada (el TXT sale
     idéntico al de una descarga de un tirón); los issues desactivados;
+    un commit que está en dos pull requests, o un comentario que menciona
+    a dos issues a la vez, sale en LOS DOS (antes de 3.6.1 uno de los dos
+    lo perdía); un almacén a medias del formato anterior se pone al día
+    sin perder lo que estaba bien;
   · el TXT: inequívoco (lo que escribió alguien nunca empieza en la
     primera columna), sin caracteres de control, con las horas en la
     zona pedida, los hilos de código dentro de su revisión, los secretos
@@ -21,8 +25,10 @@ Contra un GitHub falso (`tests.fakegithub`), se exige:
 """
 
 import base64
+import json
 import os
 import re
+import sqlite3
 import shutil
 import tempfile
 import threading
@@ -33,14 +39,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from tests.fakegithub import (ConnectProxy, FakeGitHub, standard_repo,
-                              token_like)
+from tests.fakegithub import (ConnectProxy, FakeGitHub, _user,
+                              standard_repo, token_like)
 
 from gitpush_studio.core import ghsession, ghstore
 from gitpush_studio.core.errors import Cancelled, StepError
 from gitpush_studio.core.ghdump import (DumpOptions, dump_repository,
                                         free_output_path, is_dump,
-                                        parse_repository)
+                                        parse_repository, partial_download)
 from gitpush_studio.core.ghrender import (FOOTER_PREFIX, RULE, THIN,
                                           TITLE_PREFIX, clean)
 from gitpush_studio.core.ghsession import (ApiSession, link_targets,
@@ -256,24 +262,37 @@ class FetchTests(Case):
         self.assertFalse(list((self.tmp / "almacen").glob("*")),
                          "el almacén se borra al terminar")
 
+    def stop_when_served(self, cancel, fragment, times=1):
+        """«Detener» en cuanto se sirve la `times`-ésima consulta que
+        contiene `fragment` (la respuesta llega igual: lo que se pare es
+        lo siguiente)."""
+        vistas = []
+
+        def hook(what):
+            if fragment in what:
+                vistas.append(what)
+                if len(vistas) == times:
+                    cancel.set()
+        self.hub.on_served = hook
+
     def test_resuming_after_a_stop_gives_the_same_txt(self):
-        entero = self.text(self.dump(self.tmp / "entero.txt"))
+        # De una en una: los listados de issues y PR y lo de cada uno van
+        # antes que los comentarios, así que pararse ahí es exacto.
+        una = DumpOptions(mentions=True, workers=1)
+        entero = self.text(self.dump(self.tmp / "entero.txt", options=una))
         primera = len(self.hub.requests)
         self.hub.requests.clear()
         cancel = threading.Event()
-
-        def parar_en_comentarios(progress):
-            if progress.stage == "Comentarios":
-                cancel.set()
+        self.stop_when_served(cancel, "/issues/comments?")
         destino = self.tmp / "reanudado.txt"
         with self.assertRaises(Cancelled):
-            self.dump(destino, cancel=cancel,
-                      on_progress=parar_en_comentarios)
+            self.dump(destino, cancel=cancel, options=una)
+        self.hub.on_served = None
         self.assertFalse(destino.exists())
         self.assertTrue(list((self.tmp / "almacen").glob("*.sqlite3")))
         antes = len(self.hub.requests)
         self.hub.requests.clear()
-        r = self.dump(destino)
+        r = self.dump(destino, options=una)
         self.assertTrue(r.resumed)
         self.assertEqual(self.text(r), entero)
         # Lo ya descargado no se vuelve a pedir: entre las dos tandas, como
@@ -283,19 +302,37 @@ class FetchTests(Case):
         self.assertFalse(any("/issues?state=all" in p for p in paths),
                          "el listado de issues ya estaba terminado")
 
-    def test_resuming_asks_again_for_the_page_it_was_on(self):
-        cancel = threading.Event()
-        vistas = []
+    def test_resuming_with_pages_at_once_gives_the_same_txt(self):
+        # Lo mismo con varias conexiones: lo que estuviera a medias en ese
+        # momento (cualquier listado o lote) se sigue sin perder nada.
+        entero = self.text(self.dump(self.tmp / "entero.txt",
+                                     options=DumpOptions(mentions=True,
+                                                         workers=1)))
+        for veces in (1, 3, 6, 10):
+            with self.subTest(parar_tras=veces):
+                cancel = threading.Event()
+                self.stop_when_served(cancel, "/repos/ana/app/", veces)
+                destino = self.tmp / f"reanudado-{veces}.txt"
+                with self.assertRaises(Cancelled):
+                    self.dump(destino, cancel=cancel)
+                self.hub.on_served = None
+                # Lo que haya quedado (según cuándo se paró, quizá nada).
+                previo = ghstore.peek("ana", "app", base=self.tmp / "almacen")
+                r = self.dump(destino)
+                self.assertEqual(r.resumed, previo is not None)
+                self.assertEqual(self.text(r), entero)
 
-        def parar_en_la_segunda(progress):
-            if progress.stage == "Issues y pull requests":
-                vistas.append(progress.requests)
-                if len(vistas) == 3:
-                    cancel.set()
+    def test_resuming_asks_again_for_the_page_it_was_on(self):
+        # De una en una (con varias conexiones, `test_ghfast` lo prueba
+        # con las páginas a la vez).
+        una = DumpOptions(mentions=True, workers=1)
+        cancel = threading.Event()
+        self.stop_when_served(cancel, "/issues?state=all", times=2)
         with self.assertRaises(Cancelled):
-            self.dump(cancel=cancel, on_progress=parar_en_la_segunda)
+            self.dump(cancel=cancel, options=una)
+        self.hub.on_served = None
         self.hub.requests.clear()
-        self.dump()
+        self.dump(options=una)
         primera_de_issues = next(p for p in self.hub.paths()
                                  if "/issues?" in p)
         self.assertIn("page=2", primera_de_issues)
@@ -308,6 +345,114 @@ class FetchTests(Case):
         self.assertFalse(r.resumed)
         self.assertEqual(r.counts["commit"], 0)
         self.assertNotIn("añadió el commit", self.text(r))
+
+    def section(self, texto: str, cabecera: str) -> str:
+        """Lo de un issue/PR en el TXT (de su cabecera a la raya)."""
+        return texto.split(cabecera)[1].split(RULE)[0]
+
+    def test_a_commit_in_two_pull_requests_is_in_both(self):
+        # El mismo commit en el PR 2 y en el 4 (un PR reabierto como otro,
+        # ramas apiladas…): antes se guardaba UNA vez y uno lo perdía.
+        compartido = dict(self.repo.commits[2][0])
+        self.repo.commits[4].append(compartido)
+        for opciones in (DumpOptions(mentions=True, workers=1,
+                                     graphql=False),
+                         DumpOptions(mentions=True)):
+            with self.subTest(graphql=opciones.graphql):
+                r = self.dump(options=opciones)
+                texto = self.text(r)
+                self.assertEqual(r.counts["commit"], 4)
+                for cabecera in ("PULL REQUEST #2 · ", "PULL REQUEST #4 · "):
+                    self.assertIn("añadió el commit 1111111",
+                                  self.section(texto, cabecera), cabecera)
+
+    def test_one_comment_mentioning_two_issues_is_in_both(self):
+        # «Arregla #3 y #5» en el issue 1: GitHub anota la mención en los
+        # dos, desde el mismo sitio y en el mismo segundo.
+        mencion = {"event": "cross-referenced", "actor": _user("luis"),
+                   "created_at": "2025-04-01T10:00:00Z",
+                   "source": {"type": "issue", "issue": {
+                       "number": 1, "title": "Error al compilar",
+                       "state": "closed",
+                       "repository": {"full_name": "ana/app"}}}}
+        for numero in (3, 5):
+            self.repo.timeline[numero] = [dict(mencion)] \
+                + self.repo.timeline.get(numero, [])
+        for opciones in (DumpOptions(mentions=True, workers=1,
+                                     graphql=False),
+                         DumpOptions(mentions=True)):
+            with self.subTest(graphql=opciones.graphql):
+                r = self.dump(options=opciones)
+                texto = self.text(r)
+                for numero in (3, 5):
+                    trozo = texto.split(f"#{numero} · ", 1)[1].split(RULE)[0]
+                    self.assertIn("@luis lo mencionó desde el issue #1",
+                                  trozo, numero)
+
+    def old_format(self, ruta: Path) -> None:
+        """Deja el almacén como lo guardaba 3.6.0 (formato 1): los commits
+        con el sha como id y las menciones sin el número del mencionado,
+        guardados uno tras otro (el último pisa al anterior, como entonces:
+        un commit compartido se queda solo en uno de sus PR)."""
+        db = sqlite3.connect(str(ruta))
+        with db:
+            fila = db.execute("SELECT value FROM meta WHERE key = "
+                              "'identity'").fetchone()
+            identidad = dict(json.loads(fila[0]), format=1)
+            db.execute("UPDATE meta SET value = ? WHERE key = 'identity'",
+                       (json.dumps(identidad),))
+            filas = db.execute("SELECT kind, number, at, data FROM entries "
+                               "WHERE kind IN ('commit', 'mention') ORDER BY "
+                               "number, at").fetchall()
+            db.execute("DELETE FROM entries WHERE kind IN "
+                       "('commit', 'mention')")
+            for kind, number, at, data in filas:
+                d = json.loads(data)
+                if kind == "commit":
+                    ident = d["sha"]
+                else:
+                    ident = (f"{d['source_repo']}#{d['source_number']}"
+                             f"@{d['created_at']}")
+                db.execute("INSERT OR REPLACE INTO entries (kind, id, "
+                           "number, at, data) VALUES (?, ?, ?, ?, ?)",
+                           (kind, ident, number, at, data))
+        db.close()
+
+    def test_a_store_of_the_previous_format_is_upgraded(self):
+        # Una descarga a medias de 3.6.0 (formato 1), parada tras los
+        # commits y las menciones, con un commit en dos PR que ese formato
+        # dejó solo en uno. Al seguir, lo mal guardado (commits y
+        # menciones) se tira y se vuelve a pedir; lo demás (issues,
+        # revisiones…) se aprovecha. El TXT sale completo y sin repetidos.
+        self.repo.commits[4].append(dict(self.repo.commits[2][0]))
+        una = DumpOptions(mentions=True, workers=1, graphql=False)
+        entero = self.text(self.dump(self.tmp / "entero.txt", options=una))
+        cancel = threading.Event()
+        self.stop_when_served(cancel, "/issues/comments?")
+        destino = self.tmp / "reanudado.txt"
+        with self.assertRaises(Cancelled):
+            self.dump(destino, cancel=cancel, options=una)
+        self.hub.on_served = None
+        ruta = ghstore.store_path("ana", "app", base=self.tmp / "almacen")
+        self.old_format(ruta)
+        db = sqlite3.connect(str(ruta))
+        perdido = db.execute("SELECT COUNT(*) FROM entries WHERE kind = "
+                             "'commit' AND number = 2 AND id = "
+                             "'1111111aaaa'").fetchone()[0]
+        db.close()
+        self.assertEqual(perdido, 0, "en el formato 1, el PR 2 lo perdió")
+        previo = partial_download("ana/app", store_dir=self.tmp / "almacen")
+        self.assertIsNotNone(previo, "se puede seguir")
+        self.hub.requests.clear()
+        r = self.dump(destino, options=una)
+        self.assertTrue(r.resumed)
+        self.assertEqual(self.text(r), entero)
+        self.assertEqual(r.counts["commit"], 4)
+        pedidas = " ".join(self.hub.paths())
+        self.assertIn("/pulls/2/commits", pedidas)
+        self.assertIn("/issues/3/timeline", pedidas)
+        self.assertNotIn("/pulls/2/reviews", pedidas, "eso estaba bien")
+        self.assertNotIn("/issues?state=all", pedidas)
 
     def test_disabled_issues(self):
         self.repo.issues_disabled = True
@@ -399,6 +544,15 @@ class TxtTests(Case):
                       "2222222: «Pruebas»", texto)
         self.assertNotIn("se suscribió", texto)
         self.assertIn("Participan:       @luis, @ana, @ghost", texto)
+
+    def test_the_ghost_account_is_a_deleted_one(self):
+        # REST da las cuentas borradas como «ghost»; GraphQL, a veces,
+        # como nadie: el TXT dice lo mismo en los dos casos.
+        from tests.fakegithub import _user
+        self.repo.comments[1]["user"] = _user("ghost")
+        texto = self.text(self.dump())
+        self.assertEqual(texto.count("@ghost (cuenta eliminada) comentó:"),
+                         2)
 
     def test_secrets(self):
         sin = self.text(self.dump())
@@ -498,6 +652,84 @@ class CommandLineTests(Case):
         self.assertNotIn(self.secret, texto)
         self.assertIn("[2025-01-03 15:22:05 +00:00]", texto)
         self.assertIn("7 issues y pull requests", buffer.getvalue())
+        self.assertTrue(self.hub.graphql_queries, "con token, GraphQL")
+        self.assertNotIn("⚠", buffer.getvalue(), "sin avisos")
+
+    def test_issues_txt_says_when_graphql_cannot_be_used(self):
+        import contextlib
+        import io
+        from gitpush_studio import cli
+        self.hub.fault("graphql_unauth", match="/graphql", times=99)
+        buffer = io.StringIO()
+        with mock.patch.object(ghsession, "API_ROOT", self.hub.root), \
+                mock.patch.object(ghstore, "STORE_DIR", self.tmp / "alm"), \
+                contextlib.redirect_stdout(buffer):
+            rc = cli.main(["issues-txt", "ana/app", "-o",
+                           str(self.tmp / "cli.txt"), "--token", self.token])
+        self.assertEqual(rc, 0, buffer.getvalue())
+        salida = buffer.getvalue()
+        # Mientras va (una vez) y en el resumen final.
+        self.assertEqual(salida.count("⚠ GraphQL no se pudo usar"), 2,
+                         salida)
+        self.assertIn("(401)", salida)
+
+    def test_issues_txt_as_before(self):
+        import contextlib
+        import io
+        from gitpush_studio import cli
+        salida = self.tmp / "cli.txt"
+        buffer = io.StringIO()
+        with mock.patch.object(ghsession, "API_ROOT", self.hub.root), \
+                mock.patch.object(ghstore, "STORE_DIR", self.tmp / "alm"), \
+                contextlib.redirect_stdout(buffer):
+            rc = cli.main(["issues-txt", "ana/app", "-o", str(salida),
+                           "--token", self.token, "--workers", "1",
+                           "--no-graphql"])
+        self.assertEqual(rc, 0, buffer.getvalue())
+        self.assertEqual(self.hub.graphql_queries, [])
+        self.assertEqual(self.hub.connections, 1, "una sola conexión")
+
+    def test_issues_txt_tells_about_a_half_done_download(self):
+        import contextlib
+        import io
+        from gitpush_studio import cli
+        identidad = {"format": ghstore.FORMAT, "repo_id": 4242,
+                     "commits": True, "mentions": True}
+        almacen = ghstore.open_store("ana", "app", identidad,
+                                     base=self.tmp / "alm")
+        almacen.save("issues", cursor="", items=[(1, {"number": 1})])
+        almacen.close()
+
+        def lanzar(*extra):
+            buffer = io.StringIO()
+            # Solo el aviso: la descarga en sí no llega a empezar.
+            with mock.patch.object(ghsession, "API_ROOT", self.hub.root), \
+                    mock.patch.object(ghstore, "STORE_DIR", self.tmp / "alm"), \
+                    mock.patch("gitpush_studio.core.ghdump.dump_repository",
+                               side_effect=Cancelled("parado")), \
+                    contextlib.redirect_stdout(buffer):
+                cli.main(["issues-txt", "ana/app", "--token", self.token,
+                          "-o", str(self.tmp / "x.txt"), *extra])
+            return buffer.getvalue()
+        self.assertIn("↻ Sigo la descarga a medias de ana/app",
+                      lanzar("--mentions"))
+        aviso = lanzar()
+        self.assertIn("⚠ Hay una descarga a medias de ana/app con los "
+                      "commits y con las menciones", aviso)
+        self.assertIn("(--mentions)", aviso)
+
+    def test_issues_txt_workers_out_of_range(self):
+        import contextlib
+        import io
+        from gitpush_studio import cli
+        for malo in ("0", "9", "dos"):
+            errores = io.StringIO()
+            with contextlib.redirect_stderr(errores), \
+                    self.assertRaises(SystemExit) as e:
+                cli.main(["issues-txt", "ana/app", "--workers", malo])
+            self.assertEqual(e.exception.code, 2)
+            self.assertIn("--workers", errores.getvalue())
+        self.assertEqual(self.hub.requests, [], "ni una consulta")
 
 
 if __name__ == "__main__":

@@ -58,6 +58,13 @@ SIDEBAR_TOOLS = (
 )
 
 
+# Lo mínimo que se deja a cada lista de la barra lateral (en píxeles):
+# por baja que sea la ventana, se ven al menos un par de perfiles y
+# varias herramientas, y el resto se desplaza.
+SIDEBAR_PROFILES_MIN = 70
+SIDEBAR_TOOLS_MIN = 150
+
+
 class GitPushStudio(FormMixin, ProfilesMixin, DialogsMixin, PublishingMixin,
                     AutoPublishMixin, DesktopMixin, ctk.CTk):
 
@@ -123,26 +130,32 @@ class GitPushStudio(FormMixin, ProfilesMixin, DialogsMixin, PublishingMixin,
         self.after(3000, self.check_for_updates)
 
     def _build_sidebar(self):
+        """La barra lateral: perfiles arriba y herramientas abajo, cada
+        lista con su propio desplazamiento. Las dos se reparten el alto
+        que quede (las herramientas, el doble) y ninguna baja de un mínimo:
+        en una pantalla de 768 píxeles no desaparece ninguna, y añadir
+        herramientas solo alarga lo que se desplaza."""
         f = self.fonts
         sb = ctk.CTkFrame(self, width=260, corner_radius=0, fg_color=PANEL,
                           border_width=0)
         sb.grid(row=0, column=0, sticky="nsew")
         sb.grid_propagate(False)
         sb.grid_columnconfigure(0, weight=1)
-        sb.grid_rowconfigure(4, weight=1)
+        sb.grid_rowconfigure(4, weight=1, minsize=SIDEBAR_PROFILES_MIN)
+        sb.grid_rowconfigure(8, weight=2, minsize=SIDEBAR_TOOLS_MIN)
 
         ctk.CTkLabel(sb, text="⬆ GitPush Studio", font=f.logo, text_color=TEXT
-                     ).grid(row=0, column=0, sticky="w", padx=18, pady=(20, 0))
+                     ).grid(row=0, column=0, sticky="w", padx=18, pady=(16, 0))
         ctk.CTkLabel(sb, text="Tu proyecto, en GitHub, sin comandos.",
                      font=f.small, text_color=MUTED, justify="left"
-                     ).grid(row=1, column=0, sticky="w", padx=18, pady=(2, 14))
+                     ).grid(row=1, column=0, sticky="w", padx=18, pady=(2, 10))
         separator(sb).grid(row=2, column=0, sticky="ew", padx=14)
         ctk.CTkLabel(sb, text="PERFILES GUARDADOS  ·  marca varios para "
                               "publicarlos juntos", font=f.small,
                      text_color=MUTED, justify="left", wraplength=220
-                     ).grid(row=3, column=0, sticky="w", padx=18, pady=(14, 4))
+                     ).grid(row=3, column=0, sticky="w", padx=18, pady=(10, 4))
 
-        self.profile_list = scrollable(sb, corner_radius=0)
+        self.profile_list = scrollable(sb, corner_radius=0, height=120)
         self.profile_list.grid(row=4, column=0, sticky="nsew", padx=8)
 
         btns = ctk.CTkFrame(sb, fg_color="transparent")
@@ -150,31 +163,33 @@ class GitPushStudio(FormMixin, ProfilesMixin, DialogsMixin, PublishingMixin,
         btns.grid_columnconfigure(0, weight=1)
         self.btn_batch = button(btns, f, "🚀🚀  Publicar seleccionados",
                                 self.publish_selected, kind="primary",
-                                height=36, state="disabled", font=f.body)
-        self.btn_batch.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+                                height=34, state="disabled", font=f.body)
+        self.btn_batch.grid(row=0, column=0, sticky="ew", pady=(0, 5))
         button(btns, f, "💾  Guardar perfil actual", self.save_profile,
-               height=34).grid(row=1, column=0, sticky="ew", pady=(0, 6))
+               height=32).grid(row=1, column=0, sticky="ew", pady=(0, 5))
         button(btns, f, "🗑  Eliminar perfil", self.delete_profile,
-               kind="ghost", height=30, font=f.small, hover_color="#3d1d1f"
+               kind="ghost", height=28, font=f.small, hover_color="#3d1d1f"
                ).grid(row=2, column=0, sticky="ew")
 
-        separator(sb).grid(row=6, column=0, sticky="ew", padx=14, pady=(10, 0))
-        ctk.CTkLabel(sb, text="HERRAMIENTAS", font=f.small, text_color=MUTED
-                     ).grid(row=7, column=0, sticky="w", padx=18, pady=(10, 4))
-        tools = ctk.CTkFrame(sb, fg_color="transparent")
-        tools.grid(row=8, column=0, sticky="ew", padx=14)
-        tools.grid_columnconfigure(0, weight=1)
+        separator(sb).grid(row=6, column=0, sticky="ew", padx=14, pady=(8, 0))
+        ctk.CTkLabel(sb, text=f"HERRAMIENTAS  ·  {len(SIDEBAR_TOOLS)}",
+                     font=f.small, text_color=MUTED
+                     ).grid(row=7, column=0, sticky="w", padx=18, pady=(8, 2))
+        # Con su propio desplazamiento (rueda del ratón o la barra): caben
+        # todas aunque la ventana sea baja o se añadan más.
+        self.tools_list = scrollable(sb, corner_radius=0, height=240)
+        self.tools_list.grid(row=8, column=0, sticky="nsew", padx=8)
+        self.tools_list.grid_columnconfigure(0, weight=1)
         for i, (text, method) in enumerate(SIDEBAR_TOOLS):
-            button(tools, f, text, getattr(self, method), height=32,
-                   anchor="w", font=f.small
-                   ).grid(row=i, column=0, sticky="ew", pady=(0, 4))
+            button(self.tools_list, f, text, getattr(self, method),
+                   height=30, anchor="w", font=f.small
+                   ).grid(row=i, column=0, sticky="ew", padx=(4, 2),
+                          pady=(0, 4))
 
-        ctk.CTkLabel(sb, text="Los perfiles se guardan en\n~/.gitpush_studio",
-                     font=f.small, text_color=MUTED, justify="left"
-                     ).grid(row=9, column=0, sticky="w", padx=18, pady=(12, 2))
-        ctk.CTkLabel(sb, text=f"v{APP_VERSION}", font=f.small,
-                     text_color=BORDER).grid(row=10, column=0, sticky="w",
-                                             padx=18, pady=(0, 12))
+        ctk.CTkLabel(sb, text=f"v{APP_VERSION}  ·  perfiles en "
+                              "~/.gitpush_studio", font=f.small,
+                     text_color=MUTED, justify="left", wraplength=225
+                     ).grid(row=9, column=0, sticky="w", padx=18, pady=(6, 10))
         self.refresh_profile_list()
 
     def _build_main(self):

@@ -19,4 +19,4 @@ además `pip install customtkinter`; el núcleo y la CLI no.
 """
 
 APP_NAME = "GitPush Studio"
-APP_VERSION = "3.4.0"
+APP_VERSION = "3.6.1"

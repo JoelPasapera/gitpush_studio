@@ -9,7 +9,7 @@
     python -m gitpush_studio.cli apply-txt RUTA CAMBIOS.txt [--diff] [--dry-run] [--yes]
     python -m gitpush_studio.cli analyze RUTA [--html SALIDA.html] [--json SALIDA.json]
     python -m gitpush_studio.cli scan-history RUTA
-    python -m gitpush_studio.cli issues-txt USUARIO/REPO [-o SALIDA.txt] [--mentions] [--no-commits] [--redact] [--utc]
+    python -m gitpush_studio.cli issues-txt USUARIO/REPO [-o SALIDA.txt] [--mentions] [--no-commits] [--redact] [--utc] [--workers N] [--no-graphql]
     python -m gitpush_studio.cli why RUTA ARCHIVO [--ignore PATRÓN …]
     python -m gitpush_studio.cli status RUTA
     python -m gitpush_studio.cli licencias
@@ -145,6 +145,21 @@ def _token(a):
     """Token para conectarse: --token, GITHUB_TOKEN o el guardado."""
     return (getattr(a, "token", "") or os.environ.get("GITHUB_TOKEN", "")
             or saved_token(load_config()[0]))
+
+
+def _workers_arg(text: str) -> int:
+    """`--workers` de `issues-txt`: un número de 1 a 8 (más no acelera:
+    GitHub frena a quien abre demasiadas conexiones a la vez)."""
+    from .core.ghpool import MAX_WORKERS
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"«{text}» no es un número") \
+            from None
+    if not 1 <= value <= MAX_WORKERS:
+        raise argparse.ArgumentTypeError(
+            f"tiene que ser de 1 a {MAX_WORKERS}")
+    return value
 
 
 def _license_key(a):
@@ -415,7 +430,7 @@ def cmd_issues_txt(a):
     su conversación completa, en un TXT."""
     from .core.errors import Cancelled
     from .core.ghdump import (DumpOptions, default_name, dump_repository,
-                              parse_repository)
+                              parse_repository, partial_download)
     try:
         _owner, repo = parse_repository(a.repo)
     except StepError as e:
@@ -426,8 +441,24 @@ def cmd_issues_txt(a):
         print("⚠ Sin token, GitHub permite 60 consultas por hora: solo da "
               "para repositorios pequeños. Usa --token o GITHUB_TOKEN.")
     opciones = DumpOptions(commits=not a.no_commits, mentions=a.mentions,
-                           redact=a.redact, utc=a.utc)
-    estado = {"stage": "", "printed": 0}
+                           redact=a.redact, utc=a.utc, workers=a.workers,
+                           graphql=not a.no_graphql)
+    previo = partial_download(a.repo)
+    if previo is not None and previo.matches(opciones):
+        print(f"↻ Sigo la descarga a medias de {previo.repository} "
+              f"({previo.items} issues y PR ya guardados).")
+        if previo.upgrade_note():
+            print(f"  {previo.upgrade_note()}")
+    elif previo is not None:
+        mismas = [flag for flag, falta in (("--no-commits", not previo.commits),
+                                           ("--mentions", previo.mentions))
+                  if falta]
+        print(f"⚠ Hay una descarga a medias de {previo.repository} "
+              f"{previo.describe()}: con estas opciones empieza de cero. "
+              "Para seguirla, repite las mismas opciones ("
+              + (" ".join(mismas) or "sin --mentions ni --no-commits")
+              + ").")
+    estado = {"stage": "", "printed": 0, "notice": ""}
 
     def progreso(p):
         if p.stage != estado["stage"] or p.requests - estado["printed"] >= 50:
@@ -435,6 +466,10 @@ def cmd_issues_txt(a):
             estado["printed"] = p.requests
             print(f"  {p.stage}… ({p.requests} consultas de unas "
                   f"{p.estimate})", flush=True)
+        # Lo que no va como debe (GraphQL no se pudo usar…), una vez.
+        if p.notice and p.notice != estado["notice"]:
+            estado["notice"] = p.notice
+            print(f"⚠ {p.notice}", flush=True)
 
     try:
         r = dump_repository(a.repo, a.output or default_name(repo),
@@ -459,6 +494,8 @@ def cmd_issues_txt(a):
         print("  Ya había un archivo tuyo con ese nombre: no lo toqué.")
     if opciones.redact:
         print(f"  🔒 {r.redacted} secreto(s) tachado(s).")
+    if r.notice:
+        print(f"  ⚠ {r.notice}")
     return 0
 
 
@@ -618,6 +655,7 @@ def cmd_release(a):
 
 
 def build_parser():
+    from .core.ghpool import DEFAULT_WORKERS
     p = argparse.ArgumentParser(prog="gitpush_studio",
                                 description=f"{APP_NAME} {APP_VERSION}")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -780,15 +818,26 @@ def build_parser():
     it.add_argument("--token", help="token de GitHub; por defecto, "
                                     "GITHUB_TOKEN o el guardado en la app")
     it.add_argument("--no-commits", action="store_true",
-                    help="sin los commits de cada pull request (una "
-                         "consulta menos por cada uno)")
+                    help="sin los commits de cada pull request (sin "
+                         "token, una consulta menos por cada uno)")
     it.add_argument("--mentions", action="store_true",
                     help="también las menciones desde otros issues y pull "
-                         "requests (una consulta más por cada uno)")
+                         "requests (sin token, una consulta más por cada "
+                         "uno; con token van en los mismos lotes)")
     it.add_argument("--redact", action="store_true",
                     help="tachar los secretos (tokens, contraseñas, llaves)")
     it.add_argument("--utc", action="store_true",
                     help="horas en UTC (por defecto, las de este equipo)")
+    it.add_argument("--workers", type=_workers_arg, default=DEFAULT_WORKERS,
+                    metavar="N",
+                    help="conexiones con GitHub a la vez COMO MUCHO, de 1 "
+                         f"a 8 (por defecto, {DEFAULT_WORKERS}: empieza con "
+                         "4 y sube mientras GitHub responda bien; si pide "
+                         "ir más despacio, baja). Con 1, todo de uno en uno")
+    it.add_argument("--no-graphql", action="store_true",
+                    help="revisiones, commits y menciones uno a uno por "
+                         "REST, como antes (más lento; con token, GraphQL "
+                         "los pide por lotes)")
     it.set_defaults(fn=cmd_issues_txt)
 
     wy = sub.add_parser("why", help="¿por qué se sube (o no) un archivo?")

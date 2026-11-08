@@ -165,10 +165,16 @@ def offset(moment: datetime) -> str:
 # ------------------------------------------------------------------ #
 #  Personas y adornos                                                 #
 # ------------------------------------------------------------------ #
+# La cuenta con la que GitHub sustituye a las borradas (REST la da así;
+# GraphQL, a veces, como «nadie»): las dos se escriben igual.
+GHOST = "ghost"
+
+
 def who(person: object, association: str = "") -> str:
     """«@ana (propietario)», «@dependabot[bot] (bot)», «@ghost (cuenta
     eliminada)»."""
-    if not isinstance(person, dict) or not person.get("login"):
+    if not isinstance(person, dict) or not person.get("login") \
+            or person.get("login") == GHOST:
         return "@ghost (cuenta eliminada)"
     login = inline(str(person["login"]))
     notes: List[str] = []

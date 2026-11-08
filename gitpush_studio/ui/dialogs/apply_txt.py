@@ -58,7 +58,7 @@ def read_txt_file(path: str) -> str:
 class ApplyTxtDialog(WorkerDialog):
     TITLE = "Aplicar cambios de un TXT"
     SIZE = (860, 760)
-    MIN_SIZE = (700, 560)
+    MIN_SIZE = (700, 460)
 
     def __init__(self, app):
         super().__init__(app)
@@ -81,6 +81,12 @@ class ApplyTxtDialog(WorkerDialog):
                      text_color=MUTED, justify="left", wraplength=780
                      ).pack(anchor="w", pady=(2, 10), **pad)
 
+        # El pie (estado y botones) se coloca ANTES que lo demás y abajo del
+        # todo: si la pantalla no da para todo, lo que se encoge es la lista
+        # de resultados (que se desplaza), nunca «Aplicar».
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", pady=(0, 16), **pad)
+
         top = panel(self, f, "📁  Proyecto")
         rowp = ctk.CTkFrame(top, fg_color="transparent")
         rowp.pack(fill="x", padx=16, pady=(6, 12))
@@ -92,7 +98,7 @@ class ApplyTxtDialog(WorkerDialog):
                width=110).grid(row=0, column=1)
 
         src = panel(self, f, "📝  Texto con los cambios", pady=(10, 0))
-        self.txt = ctk.CTkTextbox(src, height=150, font=f.mono_s,
+        self.txt = ctk.CTkTextbox(src, height=120, font=f.mono_s,
                                   fg_color=INPUT, border_color=BORDER,
                                   border_width=1, text_color=TEXT,
                                   wrap="none")
@@ -117,12 +123,12 @@ class ApplyTxtDialog(WorkerDialog):
         self.results = scrollable(self, height=200)
         self.results.pack(fill="both", expand=True, pady=(10, 0), **pad)
 
-        self.lbl_status = ctk.CTkLabel(self, text="", font=f.small,
+        self.lbl_status = ctk.CTkLabel(footer, text="", font=f.small,
                                        text_color=MUTED, justify="left",
                                        wraplength=780)
-        self.lbl_status.pack(anchor="w", pady=(8, 0), **pad)
-        rowb = ctk.CTkFrame(self, fg_color="transparent")
-        rowb.pack(fill="x", pady=(8, 16), **pad)
+        self.lbl_status.pack(anchor="w", pady=(8, 0))
+        rowb = ctk.CTkFrame(footer, fg_color="transparent")
+        rowb.pack(fill="x", pady=(8, 0))
         rowb.grid_columnconfigure(0, weight=1)
         self.btn_apply = button(rowb, f, "✅  Aplicar los marcados",
                                 self._apply, kind="primary", height=42,

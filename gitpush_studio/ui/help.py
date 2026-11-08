@@ -97,10 +97,14 @@ GUIDE = (
          "cerrados) con quién lo abrió, cada comentario y respuesta con su "
          "autor y su hora, las revisiones, los comentarios en el código con "
          "su trozo de código, los commits, quién cerró o fusionó y cuándo, "
-         "las etiquetas y asignaciones… en orden. Con tu token va rápido "
-         "(5.000 consultas por hora); si GitHub pide esperar, espera y "
-         "sigue, y si lo detienes, la próxima vez continúa donde se quedó. "
-         "Puede tachar los secretos que alguien pegó en un issue."),
+         "las etiquetas y asignaciones… en orden. Con tu token va mucho "
+         "más rápido: todas las partes a la vez, por varias conexiones "
+         "(tantas como aguante GitHub), y las revisiones, los commits y "
+         "las menciones por lotes (un repositorio con miles de pull "
+         "requests, en minutos). Si GitHub pide esperar, espera y sigue; "
+         "si los lotes no se pueden usar (y todo va más lento), lo dice y "
+         "por qué; y si lo detienes, la próxima vez continúa donde se "
+         "quedó. Puede tachar los secretos que alguien pegó en un issue."),
         ("📊  Analizar proyecto",
          "de qué está hecho tu proyecto: lenguajes y líneas de código, "
          "comentario y en blanco; cuánto es tuyo y cuánto generado o de "

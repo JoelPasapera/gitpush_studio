@@ -11,23 +11,46 @@ que tiene GitHub de verdad y hay que saber manejar:
     pequeñas que las pedidas (`page_size`) para tener muchas con pocos
     datos;
   · cabeceras de cuota (X-RateLimit-*);
+  · los eventos, como en GitHub, del más reciente al más antiguo
+    (`events_paged`: por número de página, con «last»);
+  · GraphQL (POST /graphql) con alias, como lo usa la app: los
+    `pullRequest` con sus revisiones y commits y los
+    `issueOrPullRequest` con sus menciones, con las diferencias de
+    GitHub entre las dos API (los bots sin «[bot]», el autor de un
+    commit de bot sin enlazar, MERGED en vez de closed), un tope de
+    nodos (`graphql_cap`) para forzar lo que no cabe, y NOT_FOUND para
+    lo que no existe. Como GitHub, solo da los campos pedidos:
+    `pageInfo.hasNextPage` dice si quedaron nodos fuera, y el
+    `totalCount` de una historia cuenta TODO lo que pasó en ella
+    (comentarios, etiquetas…), no solo las menciones pedidas (lo que
+    hizo ir uno a uno a la 3.6.0);
   · fallos a la carta (`fault`): cuota agotada, límite secundario con
     Retry-After, 502, conexión cortada sin respuesta, redirecciones
-    (dentro y fuera), un «siguiente» que apunta a otro servidor, una
-    bomba gzip y una respuesta que no es JSON.
+    (dentro y fuera), un «siguiente» o un «último» que apuntan a otro
+    servidor, una bomba gzip, una respuesta que no es JSON y, en
+    GraphQL, cuota agotada (RATE_LIMITED), un lote que falla y un token
+    que no vale;
+  · retrasos (`delay`) y avisos tras servir algo (`on_served`), para
+    colar novedades a mitad de una descarga.
 
 Anota cada consulta con sus cabeceras (`requests`) para comprobar, por
-ejemplo, a quién se mandó el token.
+ejemplo, a quién se mandó el token, y cada consulta GraphQL
+(`graphql_queries`).
 """
 
 import gzip
 import json
+import re
 import socket
 import threading
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
+
+# «p12: pullRequest(number: 12)», «n7: issueOrPullRequest(number: 7)».
+_ALIAS = re.compile(r"(\w+): (pullRequest|issueOrPullRequest)"
+                    r"\(number: (\d+)\)")
 
 
 def token_like(prefix: str = "ghp_") -> str:
@@ -67,6 +90,32 @@ class FakeRepo:
         self.commits: Dict[int, List[dict]] = {}
         self.timeline: Dict[int, List[dict]] = {}
         self.issues_disabled = False
+        # Eventos por número de página (con «last»), del más reciente al
+        # más antiguo; si no, por cursor y en el orden de la lista.
+        self.events_paged = False
+
+    # ---- lo mismo, como lo da GraphQL ----------------------------------
+    def pull_numbers(self) -> set:
+        numeros = {p["number"] for p in self.pulls}
+        numeros |= {i["number"] for i in self.issues
+                    if isinstance(i.get("pull_request"), dict)}
+        return numeros | set(self.reviews) | set(self.commits)
+
+    def item_numbers(self) -> set:
+        return {i["number"] for i in self.issues} | self.pull_numbers()
+
+    def merged(self, number: int) -> bool:
+        return any(p["number"] == number and p.get("merged_at")
+                   for p in self.pulls)
+
+    def timeline_size(self, number: int) -> int:
+        """Lo que GitHub cuenta en `totalCount` de la historia de un issue:
+        TODO (eventos y comentarios), aunque se pidan solo las menciones
+        (`itemTypes` no cambia ese número; sí `pageInfo` y los nodos)."""
+        sufijo = f"/issues/{number}"
+        comentarios = sum(1 for c in self.comments
+                          if str(c.get("issue_url") or "").endswith(sufijo))
+        return len(self.timeline.get(number, [])) + comentarios
 
 
 class FakeGitHub:
@@ -78,8 +127,27 @@ class FakeGitHub:
         self.gzip = gzip_responses
         self.repos: Dict[str, FakeRepo] = {}
         self.requests: List[Tuple[str, Dict[str, str]]] = []
+        self.graphql_queries: List[str] = []
+        # Nodos que da como mucho cada lista anidada de GraphQL (GitHub:
+        # los que se pidan, hasta 100); menos, para forzar lo que no cabe.
+        self.graphql_cap = 100
         self.connections = 0
         self.faults: List[Fault] = []
+        self.delays: List[Tuple[str, float]] = []
+        # Se llama con la consulta servida, justo después de preparar su
+        # respuesta (para colar novedades «mientras tanto»).
+        self.on_served: Optional[Callable[[str], None]] = None
+        # Consultas atendiéndose a la vez ahora, y el máximo visto.
+        self.active = 0
+        self.max_active = 0
+        # Si se pasa de tantas a la vez, «ve más despacio» (429), como el
+        # límite secundario de GitHub. None: sin límite.
+        self.max_concurrent: Optional[int] = None
+        self.slow_downs = 0
+        # Bytes de los cuerpos: los que manda (respuestas) y los que
+        # recibe (consultas GraphQL).
+        self.bytes_sent = 0
+        self.bytes_received = 0
         self.remaining = 5000
         self.reset_at = int(time.time()) + 3600
         self._lock = threading.Lock()
@@ -87,7 +155,7 @@ class FakeGitHub:
 
         class Handler(_Handler):
             server_hub = hub
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server = _QuietServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
         self.port = self._server.server_address[1]
         self.root = f"http://127.0.0.1:{self.port}"
@@ -126,6 +194,21 @@ class FakeGitHub:
                     return fault
         return None
 
+    def delay(self, match: str, seconds: float) -> None:
+        """Lo que contenga `match` tarda `seconds` en empezar a servirse."""
+        with self._lock:
+            self.delays.append((match, seconds))
+
+    def wait_for(self, what: str) -> None:
+        with self._lock:
+            pausas = [s for m, s in self.delays if m in what]
+        for seconds in pausas:
+            time.sleep(seconds)
+
+    def served(self, what: str) -> None:
+        if self.on_served is not None:
+            self.on_served(what)
+
     def paths(self) -> List[str]:
         return [p for p, _h in self.requests]
 
@@ -152,6 +235,10 @@ class FakeGitHub:
         if tuple(rest) in listados:
             return self._page(parts.path, query, listados[tuple(rest)])
         if tuple(rest) == ("issues", "events"):
+            if repo.events_paged:
+                recientes = sorted(repo.events, key=lambda e: e["id"],
+                                   reverse=True)
+                return self._page(parts.path, query, recientes)
             return self._cursor_page(parts.path, query, repo.events)
         if len(rest) == 3 and rest[1].isdigit():
             number = int(rest[1])
@@ -204,6 +291,271 @@ class FakeGitHub:
         nuevo["page"] = str(page)
         return f"{self.root}{path}?{urllib.parse.urlencode(nuevo)}"
 
+    # ---- GraphQL ----------------------------------------------------------
+    def graphql(self, query: str, variables: object
+                ) -> Tuple[int, object]:
+        """La respuesta a una consulta con alias de la app."""
+        variables = variables if isinstance(variables, dict) else {}
+        nombre = f"{variables.get('owner')}/{variables.get('name')}"
+        repo = self.repos.get(nombre.lower())
+        if repo is None:
+            return 200, {"data": {"repository": None}, "errors": [{
+                "type": "NOT_FOUND", "path": ["repository"],
+                "message": "Could not resolve to a Repository with the "
+                           f"name '{nombre}'."}]}
+        operacion, fragmentos = _split_fragments(query)
+        invalida = _invalid_fragments(operacion, fragmentos) \
+            or _conflicting_fields(query)
+        if invalida:
+            # Como GitHub: una consulta inválida ni se ejecuta (sin «data»).
+            return 200, {"errors": [{"message": invalida}]}
+        alias = list(_ALIAS.finditer(operacion))
+        resultado: Dict[str, object] = {}
+        errores: List[dict] = []
+        for k, match in enumerate(alias):
+            fin = alias[k + 1].start() if k + 1 < len(alias) \
+                else len(operacion)
+            cuerpo = _expand(operacion[match.end():fin], fragmentos)
+            nombre_alias, campo, numero = match.group(1), match.group(2), \
+                int(match.group(3))
+            if campo == "pullRequest":
+                nodo = _gql_pull(repo, numero, cuerpo, self.graphql_cap)
+            else:
+                nodo = _gql_item(repo, numero, cuerpo, self.graphql_cap)
+            resultado[nombre_alias] = nodo
+            if nodo is None:
+                errores.append({
+                    "type": "NOT_FOUND",
+                    "path": ["repository", nombre_alias],
+                    "message": f"Could not resolve to a node with the "
+                               f"number of {numero}."})
+        data: Dict[str, object] = {"data": {"repository": resultado}}
+        if errores:
+            data["errors"] = errores
+        return 200, data
+
+
+# ------------------------------------------------------------------ #
+#  Lo de REST, como lo da GraphQL                                     #
+# ------------------------------------------------------------------ #
+_FRAGMENT = re.compile(r"fragment (\w+) on (\w+) \{")
+_SPREAD = re.compile(r"\.\.\.(\w+)")
+
+
+def _block(text: str, opening: int) -> Tuple[str, int]:
+    """(lo de dentro, posición tras el cierre) de las llaves que abren en
+    `opening`."""
+    nivel = 0
+    for posicion in range(opening, len(text)):
+        if text[posicion] == "{":
+            nivel += 1
+        elif text[posicion] == "}":
+            nivel -= 1
+            if nivel == 0:
+                return text[opening + 1:posicion], posicion + 1
+    return text[opening + 1:], len(text)
+
+
+def _split_fragments(query: str) -> Tuple[str, Dict[str, str]]:
+    """(la operación, {fragmento: sus campos}) de una consulta."""
+    fragmentos: Dict[str, str] = {}
+    primera: Optional[int] = None
+    for match in _FRAGMENT.finditer(query):
+        cuerpo, _fin = _block(query, match.end() - 1)
+        fragmentos[match.group(1)] = cuerpo
+        if primera is None:
+            primera = match.start()
+    return (query if primera is None else query[:primera]), fragmentos
+
+
+def _invalid_fragments(operacion: str, fragmentos: Dict[str, str]) -> str:
+    """Como GitHub: un fragmento usado sin definir, o definido sin usar,
+    hace inválida la consulta. Devuelve el error, o ""."""
+    usados = set(_SPREAD.findall(operacion))
+    for nombre in sorted(usados - set(fragmentos)):
+        return f"Fragment {nombre} was used, but not defined"
+    for nombre in sorted(set(fragmentos) - usados):
+        return f"Fragment {nombre} was defined, but not used"
+    return ""
+
+
+def _expand(cuerpo: str, fragmentos: Dict[str, str]) -> str:
+    """Los campos de un alias con los de los fragmentos que nombra."""
+    partes = [cuerpo]
+    for nombre in _SPREAD.findall(cuerpo):
+        partes.append(fragmentos.get(nombre, ""))
+    return " ".join(partes)
+
+
+def _conflicting_fields(query: str) -> str:
+    """Como GitHub, rechaza `state` sin alias en los fragmentos de Issue
+    y de PullRequest de una misma selección (son de tipos distintos:
+    IssueState y PullRequestState). Devuelve el error, o ""."""
+    for match in re.finditer(r"source \{", query):
+        dentro, _fin = _block(query, match.end() - 1)
+        sin_alias = re.findall(r"(?<!: )\bstate\b", dentro)
+        if len(sin_alias) >= 2:
+            return ("Fields 'state' conflict because they return "
+                    "conflicting types 'IssueState' and 'PullRequestState'. "
+                    "Use different aliases on the fields to fetch both if "
+                    "this was intentional.")
+    return ""
+
+
+def _first(cuerpo: str, campo: str) -> Optional[int]:
+    """El `first` pedido para una lista anidada, o None si no se pidió."""
+    match = re.search(campo + r"\(first: (\d+)", cuerpo)
+    return int(match.group(1)) if match else None
+
+
+def _top_level(text: str) -> str:
+    """Una selección sin lo que va entre llaves dentro de ella (para
+    saber qué campos se piden en ESE nivel)."""
+    fuera: List[str] = []
+    nivel = 0
+    for letra in text:
+        if letra == "{":
+            nivel += 1
+        elif letra == "}":
+            nivel -= 1
+        elif nivel == 0:
+            fuera.append(letra)
+    return "".join(fuera)
+
+
+def _selection(cuerpo: str, campo: str) -> str:
+    """Lo que se pide DENTRO de una lista anidada («reviews(…) { … }»)."""
+    match = re.search(campo + r"\([^)]*\)\s*\{", cuerpo)
+    if not match:
+        return ""
+    dentro, _fin = _block(cuerpo, match.end() - 1)
+    return dentro
+
+
+def _gql_actor(user: object) -> Optional[dict]:
+    """Un usuario de REST como «Actor» de GraphQL: los bots se llaman
+    sin «[bot]»."""
+    if not isinstance(user, dict) or not user.get("login"):
+        return None
+    login = user["login"]
+    tipo = user.get("type") or "User"
+    if tipo == "Bot" and login.endswith("[bot]"):
+        login = login[:-len("[bot]")]
+    return {"login": login, "__typename": tipo}
+
+
+def _gql_review(review: dict) -> dict:
+    commit = review.get("commit_id")
+    return {"databaseId": review.get("id"), "state": review.get("state"),
+            "body": review.get("body") or "",
+            "submittedAt": review.get("submitted_at"),
+            "url": review.get("html_url"),
+            "authorAssociation": review.get("author_association"),
+            "author": _gql_actor(review.get("user")),
+            "commit": {"oid": commit} if commit else None}
+
+
+def _gql_commit(raw: dict) -> dict:
+    """Un commit: GraphQL solo enlaza la cuenta de una PERSONA."""
+    commit = raw.get("commit") or {}
+    autor = commit.get("author") or {}
+    quien = raw.get("author")
+    usuario = {"login": quien["login"]} if isinstance(quien, dict) \
+        and quien.get("type", "User") == "User" else None
+    return {"commit": {
+        "oid": raw.get("sha"), "message": commit.get("message"),
+        "committedDate": (commit.get("committer") or {}).get("date"),
+        "authoredDate": autor.get("date"),
+        "author": {"name": autor.get("name"), "email": autor.get("email"),
+                   "user": usuario}}}
+
+
+def _gql_connection(items: List[dict], first: int, cap: int,
+                    selection: str, total: Optional[int] = None) -> dict:
+    """Una lista anidada como la da GitHub: solo los campos pedidos.
+    `pageInfo.hasNextPage` dice si quedaron nodos fuera; `totalCount`,
+    lo que diga `total` (en la historia, TODO: ver `timeline_size`)."""
+    nodos = items[:min(first, cap)]
+    conexion: Dict[str, object] = {"nodes": nodos}
+    nivel = _top_level(selection)
+    if re.search(r"\btotalCount\b", nivel):
+        conexion["totalCount"] = len(items) if total is None else total
+    pagina = re.search(r"\bpageInfo\s*\{([^}]*)\}", selection)
+    if pagina and re.search(r"\bhasNextPage\b", pagina.group(1)):
+        conexion["pageInfo"] = {"hasNextPage": len(items) > len(nodos)}
+    return conexion
+
+
+def _gql_pull(repo: FakeRepo, number: int, cuerpo: str, cap: int
+              ) -> Optional[dict]:
+    if number not in repo.pull_numbers():
+        return None
+    nodo: Dict[str, object] = {}
+    revisiones = _first(cuerpo, "reviews")
+    if revisiones is not None:
+        nodo["reviews"] = _gql_connection(
+            [_gql_review(r) for r in repo.reviews.get(number, [])],
+            revisiones, cap, _selection(cuerpo, "reviews"))
+    commits = _first(cuerpo, "commits")
+    if commits is not None:
+        nodo["commits"] = _gql_connection(
+            [_gql_commit(c) for c in repo.commits.get(number, [])],
+            commits, cap, _selection(cuerpo, "commits"))
+    _add_timeline(repo, number, cuerpo, cap, nodo)
+    return nodo
+
+
+def _add_timeline(repo: "FakeRepo", number: int, cuerpo: str, cap: int,
+                  nodo: Dict[str, object]) -> None:
+    """Sus menciones desde otros issues y PR, si se piden. Como GitHub,
+    `totalCount` cuenta TODA la historia (no solo las menciones)."""
+    first = _first(cuerpo, "timelineItems")
+    if first is not None:
+        cruzadas = [_gql_mention(repo, e)
+                    for e in repo.timeline.get(number, [])
+                    if e.get("event") == "cross-referenced"]
+        nodo["timelineItems"] = _gql_connection(
+            cruzadas, first, cap, _selection(cuerpo, "timelineItems"),
+            total=repo.timeline_size(number))
+
+
+def _gql_mention(repo: FakeRepo, event: dict) -> dict:
+    issue = (event.get("source") or {}).get("issue") or {}
+    es_pr = isinstance(issue.get("pull_request"), dict)
+    origen = (issue.get("repository") or {}).get("full_name")
+    estado = str(issue.get("state") or "").upper()
+    if es_pr and origen == repo.full_name and repo.merged(issue["number"]):
+        estado = "MERGED"
+    return {"createdAt": event.get("created_at"),
+            "actor": _gql_actor(event.get("actor")),
+            "source": {"__typename": "PullRequest" if es_pr else "Issue",
+                       "number": issue.get("number"),
+                       "title": issue.get("title"),
+                       ("prState" if es_pr else "issueState"): estado,
+                       "repository": {"nameWithOwner": origen}}}
+
+
+def _gql_item(repo: FakeRepo, number: int, cuerpo: str, cap: int
+              ) -> Optional[dict]:
+    if number not in repo.item_numbers():
+        return None
+    tipo = "PullRequest" if number in repo.pull_numbers() else "Issue"
+    nodo: Dict[str, object] = {"__typename": tipo}
+    _add_timeline(repo, number, cuerpo, cap, nodo)
+    return nodo
+
+
+class _QuietServer(ThreadingHTTPServer):
+    """Sin trazas por las conexiones que el cliente corta a propósito
+    (al detenerse, o ante una respuesta que no quiere leer entera)."""
+
+    def handle_error(self, request, client_address) -> None:
+        import sys
+        error = sys.exc_info()[1]
+        if isinstance(error, (ConnectionError, TimeoutError)):
+            return
+        super().handle_error(request, client_address)
+
 
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
@@ -220,16 +572,101 @@ class _Handler(BaseHTTPRequestHandler):
     def log_message(self, *_args) -> None:
         pass
 
+    def _begin(self) -> None:
+        """Cuenta cuántas consultas se atienden a la vez (desde que
+        llegan hasta que se responden; no las conexiones en espera)."""
+        hub = self.server_hub
+        with hub._lock:
+            hub.active += 1
+            hub.max_active = max(hub.max_active, hub.active)
+
+    def _end(self) -> None:
+        hub = self.server_hub
+        with hub._lock:
+            hub.active -= 1
+
     def do_GET(self) -> None:                 # noqa: N802
+        self._begin()
+        try:
+            self._get()
+        finally:
+            self._end()
+
+    def do_POST(self) -> None:                # noqa: N802
+        self._begin()
+        try:
+            self._post()
+        finally:
+            self._end()
+
+    def _get(self) -> None:
         hub = self.server_hub
         hub.requests.append((self.path, {k.lower(): v for k, v
                                          in self.headers.items()}))
+        hub.wait_for(self.path)
+        if self._too_many():
+            return
         fault = hub.take_fault(self.path)
         if fault is not None:
             self._fault(fault)
             return
         status, data, headers = hub.respond(self.path)
+        hub.served(self.path)
         self._send(status, json.dumps(data).encode("utf-8"), headers)
+
+    def _too_many(self) -> bool:
+        """Como el límite secundario de GitHub: con más de
+        `max_concurrent` consultas a la vez, «ve más despacio»."""
+        hub = self.server_hub
+        if hub.max_concurrent is None:
+            return False
+        with hub._lock:
+            demasiadas = hub.active > hub.max_concurrent
+            if demasiadas:
+                hub.slow_downs += 1
+        if demasiadas:
+            cuerpo = json.dumps({"message": "You have exceeded a secondary "
+                                            "rate limit."}).encode()
+            self._send(429, cuerpo, {"Retry-After": "1"})
+        return demasiadas
+
+    def _post(self) -> None:
+        """GraphQL: solo con token, como en GitHub."""
+        hub = self.server_hub
+        cabeceras = {k.lower(): v for k, v in self.headers.items()}
+        hub.requests.append((self.path, cabeceras))
+        largo = int(self.headers.get("Content-Length") or 0)
+        crudo = self.rfile.read(largo) if largo else b""
+        with hub._lock:
+            hub.bytes_received += len(crudo)
+        try:
+            pedido = json.loads(crudo.decode("utf-8"))
+        except ValueError:
+            pedido = {}
+        pedido = pedido if isinstance(pedido, dict) else {}
+        query = str(pedido.get("query") or "")
+        with hub._lock:
+            hub.graphql_queries.append(query)
+        donde = f"{self.path} {query}"
+        hub.wait_for(donde)
+        if self._too_many():
+            return
+        fault = hub.take_fault(donde)
+        if fault is not None:
+            self._fault(fault)
+            return
+        graphql = {"X-RateLimit-Resource": "graphql"}
+        if urllib.parse.urlsplit(self.path).path != "/graphql":
+            self._send(404, json.dumps({"message": "Not Found"}).encode(), {})
+            return
+        if "authorization" not in cabeceras:
+            self._send(401, json.dumps({
+                "message": "This endpoint requires you to be "
+                           "authenticated."}).encode(), graphql)
+            return
+        status, data = hub.graphql(query, pedido.get("variables"))
+        hub.served(donde)
+        self._send(status, json.dumps(data).encode("utf-8"), graphql)
 
     def _send(self, status: int, body: bytes, headers: Dict[str, str],
               remaining: Optional[int] = None, reset: Optional[int] = None,
@@ -239,6 +676,8 @@ class _Handler(BaseHTTPRequestHandler):
         comprimir = force_gzip or (hub.gzip and pide_gzip and not plain)
         if comprimir and not force_gzip:
             body = gzip.compress(body)
+        with hub._lock:
+            hub.bytes_sent += len(body)
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -279,6 +718,44 @@ class _Handler(BaseHTTPRequestHandler):
             otro = "http://otro-servidor.invalid:1/repos/x/y/issues?page=2"
             self._send(status, json.dumps(data).encode(),
                        {"Link": f'<{otro}>; rel="next"'})
+        elif kind == "foreign_last":
+            status, data, headers = self.server_hub.respond(self.path)
+            otro = "http://otro-servidor.invalid:1/repos/x/y/issues?page=9"
+            enlaces = [p for p in headers.get("Link", "").split(", ")
+                       if 'rel="last"' not in p and p]
+            enlaces.append(f'<{otro}>; rel="last"')
+            self._send(status, json.dumps(data).encode(),
+                       {"Link": ", ".join(enlaces)})
+        elif kind == "last":
+            # Una respuesta normal, pero la última de la hora.
+            status, data, headers = self.server_hub.respond(self.path)
+            reset = int(time.time()) + int(fault.extra.get("seconds", 30))
+            self._send(status, json.dumps(data).encode(), headers,
+                       remaining=0, reset=reset)
+        elif kind == "graphql_rate":
+            reset = int(time.time()) + int(fault.extra.get("seconds", 30))
+            cuerpo = json.dumps({"errors": [{
+                "type": "RATE_LIMITED",
+                "message": "API rate limit exceeded for user ID 1."}]})
+            self._send(200, cuerpo.encode(),
+                       {"X-RateLimit-Resource": "graphql"}, remaining=0,
+                       reset=reset)
+        elif kind == "graphql_error":
+            cuerpo = json.dumps({"data": None, "errors": [{
+                "message": "Something went wrong while executing your "
+                           "query. This may be the result of a timeout."}]})
+            self._send(200, cuerpo.encode(),
+                       {"X-RateLimit-Resource": "graphql"})
+        elif kind == "graphql_unauth":
+            self._send(401, mensaje("Bad credentials"),
+                       {"X-RateLimit-Resource": "graphql"})
+        elif kind == "graphql_norepo":
+            cuerpo = json.dumps({"data": {"repository": None}, "errors": [{
+                "type": "NOT_FOUND", "path": ["repository"],
+                "message": "Could not resolve to a Repository with the "
+                           "name 'ana/app'."}]})
+            self._send(200, cuerpo.encode(),
+                       {"X-RateLimit-Resource": "graphql"})
         elif kind == "bomb":
             bomba = gzip.compress(b"\0" * (40 * 1024 * 1024))
             self._send(200, bomba, {}, force_gzip=True)

@@ -22,7 +22,7 @@ from ...core.ignore import anchor_pattern
 from ...core.pack import PackOptions, consolidate_project, free_txt_path
 from ...core.txtchanges import CHANGES_DIFF, CHANGES_FILES, CHANGES_NONE
 from ..base import WorkerDialog
-from ..theme import AMBER, BLUE, GREEN_T, MUTED, RED, TEXT
+from ..theme import AMBER, BLUE, GREEN_T, MUTED, RED
 from ..widgets import (browse_folder_into, button, checkbox, entry, hint,
                        option_menu, panel, progress_bar, segmented,
                        set_text)
@@ -50,8 +50,8 @@ def _inside(out, proj):
 
 class ConsolidateDialog(WorkerDialog):
     TITLE = "Consolidar proyecto a TXT"
-    SIZE = (760, 760)
-    MIN_SIZE = (660, 560)
+    SIZE = (760, 720)
+    MIN_SIZE = (640, 420)
 
     def __init__(self, app):
         super().__init__(app)
@@ -60,26 +60,25 @@ class ConsolidateDialog(WorkerDialog):
         self.parts: List[str] = []
         self.next_part = 0
         self.cancel_event = threading.Event()
-        pad = {"padx": 22}
+        body, footer = self.scrolling_layout(
+            "📄  Consolidar a TXT",
+            "Todo el proyecto (árbol + contenido) en un solo archivo de "
+            "texto.")
 
-        ctk.CTkLabel(self, text="📄  Consolidar a TXT", font=f.title,
-                     text_color=TEXT).pack(anchor="w", pady=(18, 0), **pad)
-        ctk.CTkLabel(self, text="Todo el proyecto (árbol + contenido) en un "
-                                "solo archivo de texto.", font=f.small,
-                     text_color=MUTED).pack(anchor="w", pady=(2, 12), **pad)
-
-        c1 = panel(self, f, "📁  Proyecto a empaquetar")
+        c1 = panel(body, f, "📁  Proyecto a empaquetar", padx=12,
+                   pady=(0, 10))
         rowp = ctk.CTkFrame(c1, fg_color="transparent")
-        rowp.pack(fill="x", padx=16, pady=(6, 12))
+        rowp.pack(fill="x", padx=16, pady=(4, 12))
         rowp.grid_columnconfigure(0, weight=1)
         self.e_proj = entry(rowp, f, "Carpeta del proyecto")
         self.e_proj.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         button(rowp, f, "Examinar…", self._browse_proj, width=110
                ).grid(row=0, column=1)
 
-        c2 = panel(self, f, "💾  Archivo TXT de salida", pady=(12, 0))
+        c2 = panel(body, f, "💾  Archivo TXT de salida", padx=12,
+                   pady=(0, 10))
         rowo = ctk.CTkFrame(c2, fg_color="transparent")
-        rowo.pack(fill="x", padx=16, pady=(6, 0))
+        rowo.pack(fill="x", padx=16, pady=(4, 0))
         rowo.grid_columnconfigure(0, weight=1)
         self.e_out = entry(rowo, f, "ruta\\del\\proyecto.txt")
         self.e_out.grid(row=0, column=0, sticky="ew", padx=(0, 8))
@@ -94,13 +93,14 @@ class ConsolidateDialog(WorkerDialog):
                     "que midan (también los que están en UTF-16 o en ANSI "
                     "de Windows, ya convertidos); los binarios solo se "
                     "mencionan con su tamaño. El TXT nunca se incluye a sí "
-                    "mismo.", wraplength=640, pady=(6, 12))
+                    "mismo.", wraplength=640, pady=(6, 10))
 
-        c3 = panel(self, f, "🤖  Para pasárselo a una IA", pady=(12, 0))
+        c3 = panel(body, f, "🤖  Para pasárselo a una IA", padx=12,
+                   pady=(0, 4))
         self.seg_content = segmented(c3, f, [c[0] for c in CONTENT_CHOICES],
                                      height=30, font=f.small)
         self.seg_content.set(CONTENT_CHOICES[0][0])
-        self.seg_content.pack(anchor="w", padx=16, pady=(6, 0))
+        self.seg_content.pack(anchor="w", padx=16, pady=(4, 0))
         self.v_ai = ctk.BooleanVar(value=False)
         checkbox(c3, f, "Dejar fuera lo que no aporta (archivos de bloqueo "
                         "de dependencias, minificados, generados, código de "
@@ -109,7 +109,7 @@ class ConsolidateDialog(WorkerDialog):
         self.v_redact = ctk.BooleanVar(value=True)
         checkbox(c3, f, "Tachar los secretos (contraseñas, tokens, llaves) "
                         "como «••••••••»", self.v_redact
-                 ).pack(anchor="w", padx=16, pady=(6, 0))
+                 ).pack(anchor="w", padx=16, pady=(4, 0))
         rows = ctk.CTkFrame(c3, fg_color="transparent")
         rows.pack(fill="x", padx=16, pady=(8, 0))
         ctk.CTkLabel(rows, text="Dividir en partes de:", font=f.small,
@@ -123,17 +123,18 @@ class ConsolidateDialog(WorkerDialog):
                     "y listos para aplicarlos de vuelta; «Solo las "
                     "diferencias», solo sus líneas cambiadas. Los secretos "
                     "tachados se recuperan solos al aplicar los cambios "
-                    "con «📥 Aplicar TXT».", wraplength=640, pady=(6, 12))
+                    "con «📥 Aplicar TXT».", wraplength=640, pady=(6, 10))
 
-        self.pbar = progress_bar(self)
-        self.pbar.pack(fill="x", pady=(14, 0), **pad)
-        self.lbl_status = ctk.CTkLabel(self, text="", font=f.small,
+        # El pie: progreso, estado y botones, siempre a la vista.
+        self.pbar = progress_bar(footer)
+        self.pbar.pack(fill="x", pady=(2, 0))
+        self.lbl_status = ctk.CTkLabel(footer, text="", font=f.small,
                                        text_color=MUTED, justify="left",
-                                       wraplength=640)
-        self.lbl_status.pack(anchor="w", pady=(8, 0), **pad)
+                                       wraplength=700)
+        self.lbl_status.pack(anchor="w", pady=(4, 0))
 
-        rowb = ctk.CTkFrame(self, fg_color="transparent")
-        rowb.pack(fill="x", pady=(10, 18), **pad)
+        rowb = ctk.CTkFrame(footer, fg_color="transparent")
+        rowb.pack(fill="x", pady=(6, 0))
         rowb.grid_columnconfigure(0, weight=1)
         self.btn_go = button(rowb, f, "Generar TXT", self._generate,
                              kind="primary", height=42)

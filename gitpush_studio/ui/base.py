@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 """Clases base de los diálogos.
 
-    BaseDialog      título, colocación, grab, cierre.
+    BaseDialog      título, colocación, grab, cierre; y, para los
+                    formularios largos, `scrolling_layout`: cabecera y pie
+                    (estado y botones) siempre a la vista y, entre medias,
+                    un cuerpo que se desplaza si la pantalla no da para más.
     DecisionDialog  una pregunta con respuesta única (vista previa,
                     revisión): `finish(resultado)` llama a `on_done`
                     exactamente una vez y cierra.
@@ -20,8 +23,8 @@ import tkinter as tk
 import customtkinter as ctk
 
 from ..core.errors import StepError
-from .theme import BG, MUTED
-from .widgets import place_dialog
+from .theme import BG, MUTED, TEXT
+from .widgets import place_dialog, scrollable
 
 POLL_MS = 80
 
@@ -36,6 +39,9 @@ class BaseDialog(ctk.CTkToplevel):
         self.app = app
         self.fonts = app.fonts
         self.lbl_status = None
+        # Con `scrolling_layout`: el cuerpo desplazable y el pie fijo.
+        self.body = None
+        self.footer = None
         self._token_visible = False
         self.title(title or self.TITLE)
         self.configure(fg_color=BG)
@@ -54,6 +60,36 @@ class BaseDialog(ctk.CTkToplevel):
 
     def close(self):
         self.destroy()
+
+    def scrolling_layout(self, title, subtitle=""):
+        """Cabecera arriba, pie abajo y un cuerpo desplazable en medio.
+
+        La ventana se acota a la pantalla (`place_dialog`), así que en un
+        portátil de 768 píxeles de alto, o con el texto ampliado en
+        Windows, no siempre cabe todo. Con esta disposición lo que no cabe
+        se desplaza DENTRO del cuerpo (con la rueda o la barra) y el pie
+        —la barra de progreso, el estado y los botones— se coloca ANTES
+        que el cuerpo, abajo del todo, para que nunca quede cortado.
+
+        Devuelve (cuerpo, pie): en el cuerpo van las tarjetas del
+        formulario (`panel(cuerpo, …, padx=12)`); en el pie, lo que tiene
+        que verse siempre.
+        """
+        f = self.fonts
+        ancho = max(320, self.SIZE[0] - 80)
+        ctk.CTkLabel(self, text=title, font=f.title, text_color=TEXT
+                     ).pack(anchor="w", padx=22, pady=(16, 0))
+        if subtitle:
+            ctk.CTkLabel(self, text=subtitle, font=f.small, text_color=MUTED,
+                         justify="left", wraplength=ancho
+                         ).pack(anchor="w", padx=22, pady=(2, 8))
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=22, pady=(6, 14))
+        body = scrollable(self)
+        body.pack(fill="both", expand=True, padx=(10, 6))
+        self.body = body
+        self.footer = footer
+        return body, footer
 
     def status(self, text, color=MUTED):
         if self.lbl_status is not None:

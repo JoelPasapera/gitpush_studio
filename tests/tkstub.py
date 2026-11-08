@@ -93,6 +93,9 @@ class Widget:
     def pack(self, **kw):
         return self
 
+    def pack_forget(self):
+        pass
+
     def grid_remove(self):
         pass
 
